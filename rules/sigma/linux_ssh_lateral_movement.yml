@@ -1,20 +1,15 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: linux_ssh_lateral_movement
 id: linux_ssh_lateral_movement
-status: experimental
-tags:
-  - attack.t1021
-  - attack.t1098
-mitre_techniques:
-  - T1021
-  - T1098
-
+level: medium
+status: "experimental"
+tags: ["attack.t1021","attack.t1098"]
+mitre_techniques: ["T1021","T1098"]
+logsource:
+  product: linux
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - ssh
-        - scp
-      command_line_contains:
-        - "@"
-        - "-i "
+      process_any_of: [ssh, scp, sftp]
+      command_line_contains: ["-i /tmp/", "-i /dev/shm/", "-i /var/tmp/", "-i/tmp/", "-r 0.0.0.0:", "-r *:", "userknownhostsfile=/dev/null"]
       within_secs: 30

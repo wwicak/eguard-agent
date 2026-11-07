@@ -1,17 +1,14 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: linux_ld_preload_defense_evasion
 id: linux_ld_preload_defense_evasion
-status: experimental
-tags:
-  - attack.t1574
-  - attack.t1562
-mitre_techniques:
-  - T1574
-  - T1562
-
+level: high
+status: "experimental"
+tags: ["attack.t1574","attack.t1562"]
+mitre_techniques: ["T1574","T1562"]
+logsource:
+  product: linux
 detection:
   sequence:
     - event_class: process_exec
-      command_line_contains:
-        - LD_PRELOAD=
-        - LD_LIBRARY_PATH=
+      command_line_contains: [ld_preload=/tmp/, ld_preload=/dev/shm/, ld_preload=/var/tmp/, ld_preload=./, ld_preload=/run/user/, "ld_preload=\"/tmp/", /etc/ld.so.preload]
       within_secs: 30

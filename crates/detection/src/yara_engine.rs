@@ -1,17 +1,19 @@
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+mod cache;
+mod literal;
+use cache::FileKey;
+use literal::parse_rules;
 
 use crate::types::{EventClass, TelemetryEvent};
 
 const DEFAULT_MAX_SCAN_BYTES: usize = 1024 * 1024;
-
-/// Maximum wall-clock time the SubstringYaraBackend is allowed to spend
-/// scanning a single buffer.  Matches the 5-second timeout used by
-/// `YaraRustBackend::scan_mem`.
-const SUBSTRING_SCAN_BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YaraHit {
@@ -44,12 +46,16 @@ pub type Result<T> = std::result::Result<T, YaraError>;
 trait YaraBackend: Send {
     fn load_rules_str(&mut self, source: &str) -> Result<usize>;
     fn scan_bytes(&self, source: &str, bytes: &[u8]) -> Vec<YaraHit>;
+    fn max_file_size(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub struct YaraEngine {
     backend: Box<dyn YaraBackend + Send>,
     max_scan_bytes: usize,
     excluded_path_prefixes: Vec<String>,
+    verdicts: Mutex<HashMap<FileKey, Vec<YaraHit>>>,
 }
 
 /// Default path prefixes excluded from YARA file scanning.
@@ -89,6 +95,7 @@ impl YaraEngine {
             backend: default_backend(),
             max_scan_bytes: DEFAULT_MAX_SCAN_BYTES,
             excluded_path_prefixes: load_excluded_path_prefixes(),
+            verdicts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -97,6 +104,7 @@ impl YaraEngine {
             backend: default_backend(),
             max_scan_bytes: max_scan_bytes.max(4096),
             excluded_path_prefixes: load_excluded_path_prefixes(),
+            verdicts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -107,13 +115,21 @@ impl YaraEngine {
     }
 
     fn is_excluded_path(&self, path: &str) -> bool {
+        if is_platform_system_path(&normalized_path(path)) {
+            return true;
+        }
         self.excluded_path_prefixes
             .iter()
-            .any(|prefix| path.starts_with(prefix.as_str()))
+            .any(|prefix| normalized_path(path).starts_with(&normalized_path(prefix)))
     }
 
     pub fn load_rules_str(&mut self, source: &str) -> Result<usize> {
-        self.backend.load_rules_str(source)
+        let loaded = self.backend.load_rules_str(source)?;
+        self.verdicts
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        Ok(loaded)
     }
 
     pub fn load_rules_from_dir(&mut self, dir: &Path) -> Result<usize> {
@@ -149,31 +165,90 @@ impl YaraEngine {
     }
 
     pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
-        let mut hits = Vec::new();
-
-        // Only scan file content, not command lines.  Command-line string
-        // scanning produces extreme false-positive rates with community rule
-        // sets (common strings like "bash", "/bin/", "GET" match thousands
-        // of rules on every process exec).
-        if let Some(path) = event.file_path.as_deref() {
-            // Skip system library directories to avoid false positives from
-            // broad community rules matching benign shared objects.
-            if self.is_excluded_path(path)
-                || (event.event_class == EventClass::ProcessExec
-                    && is_excluded_process_exec_path(path))
+        if event.event_class != EventClass::ProcessExec
+            && !(event.event_class == EventClass::FileOpen && event.file_write)
+        {
+            return Vec::new();
+        }
+        let Some(path) = event.file_path.as_deref() else {
+            return Vec::new();
+        };
+        if self.is_excluded_path(path)
+            || (event.event_class == EventClass::ProcessExec && is_excluded_process_exec_path(path))
+            || !is_scannable_regular_file(Path::new(path))
+        {
+            return Vec::new();
+        }
+        // Use one open handle for identity, content and post-read metadata.
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // A path replaced by a FIFO after stat must not block the event loop.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        // A writer can preserve size/mtime; never reuse a pre-write verdict.
+        if event.file_write {
+            self.verdicts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        }
+        let Ok(mut file) = options.open(path) else {
+            return Vec::new();
+        };
+        let Ok(metadata) = file.metadata() else {
+            return Vec::new();
+        };
+        if !metadata.is_file()
+            || self
+                .backend
+                .max_file_size()
+                .is_some_and(|cap| metadata.len() > cap)
+        {
+            return Vec::new();
+        }
+        let key = FileKey::new(path, &file, &metadata);
+        if let Some(key) = key.as_ref() {
+            if let Some(hits) = self
+                .verdicts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(key)
             {
-                return hits;
-            }
-            let scan_path = Path::new(path);
-            if !is_scannable_regular_file(scan_path) {
-                return hits;
-            }
-            if let Ok(content) = read_limited_file(scan_path, self.max_scan_bytes) {
-                hits.extend(self.backend.scan_bytes(path, &content));
+                return hits.clone();
             }
         }
-
-        dedup_hits(hits)
+        let mut content = Vec::new();
+        if (&mut file)
+            .take(self.max_scan_bytes as u64)
+            .read_to_end(&mut content)
+            .is_err()
+        {
+            return Vec::new();
+        }
+        // A truncated file must never satisfy filesize/offset conditions.
+        if metadata.len() > content.len() as u64 {
+            return Vec::new();
+        }
+        let hits = self.scan_bytes(path, &content);
+        if let Some(key) = key {
+            if file
+                .metadata()
+                .ok()
+                .and_then(|m| FileKey::new(path, &file, &m))
+                .as_ref()
+                == Some(&key)
+            {
+                let mut cache = self.verdicts.lock().unwrap_or_else(|p| p.into_inner());
+                if cache.len() >= 512 {
+                    cache.clear();
+                }
+                cache.insert(key, hits.clone());
+            }
+        }
+        hits
     }
 }
 
@@ -272,118 +347,58 @@ impl YaraBackend for YaraRustBackend {
 #[derive(Debug, Clone)]
 struct SubstringRule {
     name: String,
-    literals: Vec<Vec<u8>>,
+    literal: Vec<u8>,
 }
 
 #[derive(Default)]
 struct SubstringYaraBackend {
-    rules: Vec<SubstringRule>,
+    rules: Vec<Arc<Vec<SubstringRule>>>,
 }
 
 impl YaraBackend for SubstringYaraBackend {
     fn load_rules_str(&mut self, source: &str) -> Result<usize> {
-        let parsed = parse_rules(source)?;
-        let loaded = parsed.len();
-        self.rules.extend(parsed);
+        type SharedRules = HashMap<[u8; 32], Weak<Vec<SubstringRule>>>;
+        static COMPILED: OnceLock<Mutex<SharedRules>> = OnceLock::new();
+        let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+        let mut cache = COMPILED
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let rules = match cache.get(&digest).and_then(Weak::upgrade) {
+            Some(rules) => rules,
+            None => {
+                let rules = Arc::new(parse_rules(source)?);
+                cache.retain(|_, weak| weak.strong_count() > 0);
+                if cache.len() >= 512 {
+                    cache.clear();
+                }
+                cache.insert(digest, Arc::downgrade(&rules));
+                rules
+            }
+        };
+        let loaded = rules.len();
+        self.rules.push(rules);
         Ok(loaded)
     }
 
+    fn max_file_size(&self) -> Option<u64> {
+        Some(128)
+    }
+
     fn scan_bytes(&self, source: &str, bytes: &[u8]) -> Vec<YaraHit> {
-        let mut hits = Vec::new();
-        let deadline = Instant::now() + SUBSTRING_SCAN_BUDGET;
-        for (idx, rule) in self.rules.iter().enumerate() {
-            // Check the deadline every 64 rules to avoid calling Instant::now
-            // on every iteration while still bailing out promptly.
-            if idx & 63 == 63 && Instant::now() >= deadline {
-                break;
-            }
-            for literal in &rule.literals {
-                if contains_subslice(bytes, literal) {
-                    hits.push(YaraHit {
-                        rule_name: rule.name.clone(),
-                        source: source.to_string(),
-                        matched_literal: String::from_utf8_lossy(literal).into_owned(),
-                    });
-                    break;
-                }
-            }
+        if bytes.len() > 128 {
+            return Vec::new();
         }
-        hits
-    }
-}
-
-fn parse_rules(source: &str) -> Result<Vec<SubstringRule>> {
-    let mut out = Vec::new();
-    let mut current_name: Option<String> = None;
-    let mut current_literals: Vec<Vec<u8>> = Vec::new();
-    let mut in_rule = false;
-
-    for raw_line in source.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with("//") {
-            continue;
-        }
-
-        if !in_rule {
-            if line.starts_with("rule ") {
-                let name = parse_rule_name(line).ok_or_else(|| {
-                    YaraError::Parse(format!("invalid rule declaration: '{}'", line))
-                })?;
-                current_name = Some(name);
-                current_literals.clear();
-                in_rule = true;
-            }
-            continue;
-        }
-
-        if line.starts_with('}') || line.ends_with('}') {
-            let name = current_name
-                .take()
-                .ok_or_else(|| YaraError::Parse("rule close without rule name".to_string()))?;
-            if current_literals.is_empty() {
-                return Err(YaraError::Parse(format!(
-                    "rule '{}' has no quoted string literals",
-                    name
-                )));
-            }
-            out.push(SubstringRule {
-                name,
-                literals: std::mem::take(&mut current_literals),
-            });
-            in_rule = false;
-            continue;
-        }
-
-        if let Some(literal) = parse_quoted_literal(line) {
-            current_literals.push(literal.into_bytes());
-        }
-    }
-
-    if in_rule {
-        return Err(YaraError::Parse("unterminated rule block".to_string()));
-    }
-    if out.is_empty() {
-        return Err(YaraError::Parse(
-            "no YARA rule blocks found in source".to_string(),
-        ));
-    }
-    Ok(out)
-}
-
-fn parse_rule_name(line: &str) -> Option<String> {
-    let tail = line.strip_prefix("rule")?.trim_start();
-    let mut name = String::new();
-    for ch in tail.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            name.push(ch);
-        } else {
-            break;
-        }
-    }
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
+        self.rules
+            .iter()
+            .flat_map(|rules| rules.iter())
+            .filter(|rule| bytes.starts_with(&rule.literal))
+            .map(|rule| YaraHit {
+                rule_name: rule.name.clone(),
+                source: source.to_string(),
+                matched_literal: String::from_utf8_lossy(&rule.literal).into_owned(),
+            })
+            .collect()
     }
 }
 
@@ -394,45 +409,6 @@ fn count_rule_blocks(source: &str) -> usize {
         .map(str::trim)
         .filter(|line| line.starts_with("rule "))
         .count()
-}
-
-fn parse_quoted_literal(line: &str) -> Option<String> {
-    let bytes = line.as_bytes();
-    let start = bytes.iter().position(|b| *b == b'"')? + 1;
-    let mut out = Vec::new();
-    let mut i = start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => return Some(String::from_utf8_lossy(&out).into_owned()),
-            b'\\' if i + 1 < bytes.len() => {
-                let escaped = match bytes[i + 1] {
-                    b'n' => b'\n',
-                    b'r' => b'\r',
-                    b't' => b'\t',
-                    b'\\' => b'\\',
-                    b'"' => b'"',
-                    other => other,
-                };
-                out.push(escaped);
-                i += 2;
-            }
-            value => {
-                out.push(value);
-                i += 1;
-            }
-        }
-    }
-    None
-}
-
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return false;
-    }
-    if haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn is_yara_file(path: &Path) -> bool {
@@ -461,14 +437,6 @@ fn is_scannable_regular_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn read_limited_file(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
-    let mut file = fs::File::open(path)?;
-    let mut out = vec![0u8; cap];
-    let n = file.read(&mut out)?;
-    out.truncate(n);
-    Ok(out)
-}
-
 fn load_excluded_path_prefixes() -> Vec<String> {
     if let Ok(val) = std::env::var("EGUARD_YARA_EXCLUDED_PATHS") {
         let val = val.trim();
@@ -482,10 +450,12 @@ fn load_excluded_path_prefixes() -> Vec<String> {
         .collect()
 }
 
-fn is_excluded_process_exec_path(path: &str) -> bool {
+pub(crate) fn is_excluded_process_exec_path(path: &str) -> bool {
+    let path = normalized_path(path);
     DEFAULT_PROCESS_EXEC_EXCLUDED_PATH_PREFIXES
         .iter()
-        .any(|prefix| path.starts_with(prefix))
+        .any(|prefix| path.starts_with(&normalized_path(prefix)))
+        || is_platform_system_path(&path)
 }
 
 fn dedup_hits(hits: Vec<YaraHit>) -> Vec<YaraHit> {
@@ -502,3 +472,26 @@ fn dedup_hits(hits: Vec<YaraHit>) -> Vec<YaraHit> {
 
 #[cfg(test)]
 mod tests;
+
+fn normalized_path(path: &str) -> String {
+    path.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn is_platform_system_path(path: &str) -> bool {
+    // Match any Windows system drive, not just C:; keep component boundaries.
+    let windows = path.as_bytes().get(1) == Some(&b':')
+        && path.get(2..).is_some_and(|p| {
+            [
+                "/windows/system32/",
+                "/windows/syswow64/",
+                "/windows/winsxs/",
+            ]
+            .iter()
+            .any(|root| p.starts_with(root))
+        });
+    // Windows Temp/Tasks and macOS Data volumes contain user-controlled files.
+    windows
+        || path.starts_with("/system/library/")
+        || path.starts_with("/system/applications/")
+        || path.starts_with("/usr/libexec/")
+}

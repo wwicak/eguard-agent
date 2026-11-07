@@ -141,7 +141,7 @@ dpkg-query -W eguard-agent eguard-agent-rules >/artifacts/container-install-smok
 
 test -x /usr/bin/eguard-agent
 test -f /usr/lib/systemd/system/eguard-agent.service
-test -f /var/lib/eguard-agent/rules/sigma/default_webshell.yml
+test -f /var/lib/eguard-agent/rules/sigma/credential_access.yml
 test -f /var/lib/eguard-agent/rules/yara/default.yar
 test -f /var/lib/eguard-agent/rules/ioc/default_ioc.txt
 

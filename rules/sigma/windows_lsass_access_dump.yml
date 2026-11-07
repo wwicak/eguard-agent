@@ -1,29 +1,15 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: windows_lsass_access_dump
 id: windows_lsass_access_dump
-status: experimental
+level: high
+status: "experimental"
+tags: ["attack.t1003","attack.t1055","attack.t1218"]
+mitre_techniques: ["T1003","T1055","T1218"]
 logsource:
   product: windows
-  category: process_creation
-tags:
-  - attack.t1003
-  - attack.t1055
-  - attack.t1218
-mitre_techniques:
-  - T1003
-  - T1055
-  - T1218
-
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - rundll32.exe
-        - procdump.exe
-        - cmd.exe
-        - powershell.exe
-        - pwsh.exe
-      command_line_contains:
-        - "comsvcs.dll, MiniDump"
-        - "procdump.exe -ma lsass"
-        - "procdump64.exe -ma lsass"
+      process_any_of: [rundll32.exe, procdump.exe, procdump64.exe]
+      command_line_contains: ["comsvcs.dll, minidump", "comsvcs.dll,minidump", "comsvcs.dll minidump", "comsvcs.dll, #24", "comsvcs.dll,#24", "comsvcs, minidump", "comsvcs,minidump", "-ma lsass", "/ma lsass"]
       within_secs: 30

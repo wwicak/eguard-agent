@@ -303,10 +303,11 @@ fn process_and_file_cache_capacities_stay_in_half_megabyte_envelope() {
 fn yara_engine_loads_three_megabyte_synthetic_rule_corpus() {
     let mut engine = YaraEngine::new();
 
+    // RAFIX shared: retain the 3 MiB/256-rule memory workload with supported literals.
     let mut source = String::new();
     for i in 0..256usize {
         source.push_str(&format!(
-            "rule bulk_rule_{i:04} {{\n  strings:\n    $a = \"{}\"\n  condition:\n    $a\n}}\n",
+            "rule bulk_rule_{i:04} {{\n  meta:\n    description = \"{}\"\n  strings:\n    $a = \"bulk-marker-{i:04}\"\n  condition:\n    $a at 0 and filesize <= 128\n}}\n",
             "A".repeat(12 * 1024)
         ));
     }

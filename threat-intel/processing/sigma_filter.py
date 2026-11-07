@@ -2,6 +2,8 @@
 """Filter and deduplicate SIGMA rules from multiple sources for eGuard."""
 
 import argparse
+import json
+import re
 import os
 import shutil
 import sys
@@ -54,6 +56,8 @@ def should_keep_rule(rule: dict, platforms: set[str], min_status: str) -> bool:
 
     product = (logsource.get("product") or "").lower()
     service = (logsource.get("service") or "").lower()
+    if service or logsource.get("category") not in {"process_creation", "file_event", "network_connection", "dns"}:
+        return False
 
     # Exclude explicitly Windows-only rules
     if product in WINDOWS_ONLY_PRODUCTS:
@@ -98,7 +102,10 @@ def main():
         "--min-status", choices=["stable", "test"], default="test",
         help="Minimum status to include (default: test)",
     )
+    parser.add_argument("--source-commit", default="", help="Pinned upstream commit for provenance")
     args = parser.parse_args()
+    if args.source_commit and not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
+        parser.error("source-commit must be a full git commit")
 
     platforms = {p.strip().lower() for p in args.platforms.split(",")}
     output_dir = os.path.abspath(args.output)
@@ -108,6 +115,7 @@ def main():
     kept = 0
     dedup_skipped = 0
     seen_ids: set[str] = set()
+    provenance = {}
 
     for input_path in args.input:
         input_dir = os.path.abspath(input_path)
@@ -116,6 +124,9 @@ def main():
             continue
 
         source_name = os.path.basename(input_dir)
+        if source_name in {"mdecrevoisier", "joesecurity", "tsale", "rules-threat-hunting"}:
+            print(f"  SKIP (restricted source or hunting-only): {source_name}")
+            continue
         source_kept = 0
 
         for root, _dirs, files in os.walk(input_dir):
@@ -135,18 +146,25 @@ def main():
                     if rule_id in seen_ids:
                         dedup_skipped += 1
                         continue
-                    seen_ids.add(rule_id)
 
                 if should_keep_rule(rule, platforms, args.min_status):
+                    if rule_id:
+                        seen_ids.add(rule_id)
                     # Preserve subdirectory structure, prefixed by source
                     rel = os.path.relpath(src, input_dir)
                     dst = os.path.join(output_dir, source_name, rel)
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.copy2(src, dst)
+                    if args.source_commit:
+                        provenance[os.path.relpath(dst, output_dir)] = {"source_path": f"{source_name}/{rel}", "id": rule_id, "commit": args.source_commit}
                     kept += 1
                     source_kept += 1
 
         print(f"  {source_name}: {source_kept} rules kept")
+
+    if args.source_commit:
+        with open(os.path.join(output_dir, "sigma-provenance.json"), "w", encoding="utf-8") as handle:
+            json.dump({"commit": args.source_commit, "rules": provenance}, handle, sort_keys=True, indent=2)
 
     print(
         f"Sigma filter: {kept}/{total} rules kept "

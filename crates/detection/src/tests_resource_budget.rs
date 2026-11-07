@@ -38,7 +38,8 @@ fn temporal_rule(name: &str) -> TemporalRule {
         stages: vec![
             TemporalStage {
                 predicate: TemporalPredicate {
-                    sigma: None,
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+                sigma: None,
                     event_class: EventClass::ProcessExec,
                     process_any_of: None,
                     process_starts_with: None,
@@ -58,7 +59,8 @@ fn temporal_rule(name: &str) -> TemporalRule {
             },
             TemporalStage {
                 predicate: TemporalPredicate {
-                    sigma: None,
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+                sigma: None,
                     event_class: EventClass::NetworkConnect,
                     process_any_of: None,
                     process_starts_with: None,

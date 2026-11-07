@@ -1,3 +1,4 @@
+// RAFIX shared: core defaults include sigma=None through Default; retain causal precision.
 use crate::types::EventClass;
 use crate::util::set_of;
 

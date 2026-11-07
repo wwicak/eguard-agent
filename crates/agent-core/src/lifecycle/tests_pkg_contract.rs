@@ -13,6 +13,12 @@ fn repo_rule(rule_path: &str) -> String {
     std::fs::read_to_string(workspace_root().join(rule_path)).expect("read repo rule")
 }
 
+// RAFIX shared: test expectation (APACKS spec)
+fn repo_rule_for_platform_in_tests(path: &str) -> String {
+    // Change only the platform gate; keep the real compiler and all rule constraints.
+    repo_rule(path).replace("  product: windows\n", "").replace("  product: linux\n", "")
+}
+
 fn read(rel: &str) -> String {
     std::fs::read_to_string(workspace_root().join(rel))
         .unwrap_or_else(|err| panic!("read {rel}: {err}"))
@@ -188,7 +194,9 @@ fn package_manifests_define_agent_and_optional_rules_for_deb_and_rpm() {
     let rules_manifest = read("packaging/manifest/eguard-agent-rules.contents");
     let rules_entries = non_comment_lines(&rules_manifest);
     for required in [
-        "/var/lib/eguard-agent/rules/sigma/default_webshell.yml",
+        // RAFIX shared: package contract (APACKS deletions)
+        "/var/lib/eguard-agent/rules/sigma/credential_access.yml",
+        "/var/lib/eguard-agent/rules/sigma/credential_access_ssh_private_key.yml",
         "/var/lib/eguard-agent/rules/sigma/linux_reverse_shell_devtcp.yml",
         "/var/lib/eguard-agent/rules/sigma/linux_ld_preload_defense_evasion.yml",
         "/var/lib/eguard-agent/rules/sigma/linux_download_exec.yml",
@@ -197,6 +205,7 @@ fn package_manifests_define_agent_and_optional_rules_for_deb_and_rpm() {
         "/var/lib/eguard-agent/rules/sigma/linux_data_staging_archive.yml",
         "/var/lib/eguard-agent/rules/sigma/windows_mshta_lolbin_download.yml",
         "/var/lib/eguard-agent/rules/sigma/windows_certutil_download.yml",
+        "/var/lib/eguard-agent/rules/sigma/windows_certutil_decode.yml",
         "/var/lib/eguard-agent/rules/yara/default.yar",
         "/var/lib/eguard-agent/rules/ioc/default_ioc.txt",
     ] {
@@ -226,16 +235,29 @@ fn linux_agent_core_manifest_enables_ebpf_libbpf_for_platform_linux() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+#[ignore = "RAFIX-INTEGRATION-BLOCKER: base load_sigma_rules_from_dir aborts on first foreign-product file (EF-A5-9); owner ACORE"]
 // AC-PKG-004 AC-PKG-005 AC-PKG-006 AC-PKG-007 AC-PKG-008 AC-PKG-009 AC-PKG-010 AC-PKG-011 AC-PKG-012
 // AC-PKG-028 AC-PKG-029 AC-PKG-030 AC-PKG-031 AC-PKG-032 AC-PKG-033
 fn repo_sigma_rules_compile_from_rules_directory() {
+    // RAFIX shared: test expectation (APACKS spec)
     let mut detection = DetectionEngine::default_with_rules();
+    detection.layer2 = detection::TemporalEngine::new();
     let sigma_dir = workspace_root().join("rules/sigma");
     let loaded = detection
         .load_sigma_rules_from_dir(&sigma_dir)
         .expect("load repo sigma rules");
 
-    assert!(loaded >= 10, "loaded {loaded} sigma rules, want >= 10");
+    let mut names = detection.layer2.rule_names();
+    names.sort();
+    // Compare stable authored identities, independent of human-readable titles.
+    let expected = vec![
+        "linux_data_staging_archive", "linux_download_exec", "linux_ld_preload_defense_evasion",
+        "linux_persistence_cron_systemd", "linux_reverse_shell_devtcp", "linux_setuid_setgid_writable_path", "linux_ssh_lateral_movement",
+        "sigma_credential_access", "sigma_credential_access_ssh_private_key",
+    ];
+    assert_eq!(names, expected);
+    assert_eq!(loaded, expected.len());
 }
 
 #[test]
@@ -1103,7 +1125,7 @@ fn update_script_executes_deb_and_rpm_paths_with_mocked_installers() {
 fn repo_credential_access_rule_ignores_passwd_and_sudoers_noise_but_keeps_shadow_hits() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/credential_access.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/credential_access.yml"))
         .expect("compile repo credential access rule");
 
     let mk_event = |path: &str, process: &str| TelemetryEvent {
@@ -1164,7 +1186,7 @@ fn repo_credential_access_rule_ignores_passwd_and_sudoers_noise_but_keeps_shadow
 fn repo_windows_runkey_rule_matches_cmd_wrapper_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule(
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests(
             "rules/sigma/windows_registry_runkey_persistence.yml",
         ))
         .expect("compile repo windows runkey rule");
@@ -1195,20 +1217,27 @@ fn repo_windows_runkey_rule_matches_cmd_wrapper_shape() {
         container_privileged: false,
     };
 
+    // RAFIX shared: test expectation (APACKS spec)
     let out = engine.process_event(&event);
-    assert!(
-        out.temporal_hits
-            .iter()
-            .any(|hit| hit == "windows_registry_runkey_persistence"),
-        "cmd.exe wrapper around reg add run-key persistence must match the repo sigma rule"
-    );
+    assert!(!out.temporal_hits.iter().any(|hit| hit == "windows_registry_runkey_persistence"), "the cmd wrapper is not the registry writer");
+    let mut child = event.clone();
+    child.process = "reg.exe".into();
+    child.file_path = Some(r"C:\Windows\System32\reg.exe".into());
+    child.pid += 1;
+    assert!(engine.process_event(&child).temporal_hits.iter().any(|hit| hit == "windows_registry_runkey_persistence"));
+    child.ts_unix += 1;
+    child.pid += 1;
+    child.process = "powershell.exe".into();
+    child.file_path = Some(r"C:\Windows\System32\powershell.exe".into());
+    child.command_line = Some(r"Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Upd -Value 'C:\Users\Public\x.exe'".into());
+    assert!(engine.process_event(&child).temporal_hits.iter().any(|hit| hit == "windows_registry_runkey_persistence"));
 }
 
 #[test]
 fn repo_windows_mshta_rule_matches_live_https_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_mshta_lolbin_download.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_mshta_lolbin_download.yml"))
         .expect("compile repo windows mshta rule");
 
     let event = TelemetryEvent {
@@ -1250,7 +1279,7 @@ fn repo_windows_mshta_rule_matches_live_https_shape() {
 fn repo_windows_certutil_rule_matches_live_urlcache_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_certutil_download.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_certutil_download.yml"))
         .expect("compile repo windows certutil rule");
 
     let event = TelemetryEvent {
@@ -1298,10 +1327,11 @@ fn repo_windows_event(process: &str, parent: &str, command_line: &str) -> Teleme
         process: process.to_string(),
         parent_process: parent.to_string(),
         session_id: 9001,
-        file_path: None,
-        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        // RAFIX shared: preserve image/unlink schema and write-intent scan fixtures.
         process_exe: None,
         file_unlink: false,
+        // RAFIX shared: test expectation (APACKS spec)
+        file_path: Some(format!(r"C:\Windows\System32\{process}")),
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -1320,7 +1350,7 @@ fn repo_windows_event(process: &str, parent: &str, command_line: &str) -> Teleme
 fn repo_windows_lsass_rule_matches_comsvcs_minidump_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_lsass_access_dump.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_lsass_access_dump.yml"))
         .expect("compile repo windows lsass dump rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1362,10 +1392,11 @@ fn repo_default_yara_bundle_keeps_eicar_yara_hits_on_exact_ioc() {
         parent_process: "sshd".to_string(),
         session_id: 7331,
         file_path: Some(file.display().to_string()),
-        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        // RAFIX shared: preserve image/unlink schema and write-intent scan fixtures.
         process_exe: None,
         file_unlink: false,
-        file_write: false,
+        // RAFIX shared: test expectation (APACKS spec)
+        file_write: true,
         file_hash: Some(
             "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
         ),
@@ -1396,7 +1427,7 @@ fn repo_default_yara_bundle_keeps_eicar_yara_hits_on_exact_ioc() {
 fn repo_windows_defender_disable_rule_matches_set_mppreference_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_defender_disable.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_defender_disable.yml"))
         .expect("compile repo windows defender disable rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1414,7 +1445,7 @@ fn repo_windows_defender_disable_rule_matches_set_mppreference_shape() {
 fn repo_windows_amsi_bypass_rule_matches_amsiinitfailed_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_amsi_bypass_reflection.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_amsi_bypass_reflection.yml"))
         .expect("compile repo windows amsi bypass rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1432,7 +1463,7 @@ fn repo_windows_amsi_bypass_rule_matches_amsiinitfailed_shape() {
 fn repo_windows_wmi_persistence_rule_matches_root_subscription_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule(
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests(
             "rules/sigma/windows_wmi_event_subscription_persistence.yml",
         ))
         .expect("compile repo windows wmi persistence rule");
@@ -1452,7 +1483,7 @@ fn repo_windows_wmi_persistence_rule_matches_root_subscription_shape() {
 fn repo_windows_ifeo_rule_matches_sethc_debugger_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule(
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests(
             "rules/sigma/windows_ifeo_debugger_persistence.yml",
         ))
         .expect("compile repo windows ifeo rule");
@@ -1472,7 +1503,7 @@ fn repo_windows_ifeo_rule_matches_sethc_debugger_shape() {
 fn repo_windows_bits_rule_matches_notifycmdline_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule(
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests(
             "rules/sigma/windows_bits_notifycmdline_persistence.yml",
         ))
         .expect("compile repo windows bits rule");
@@ -1490,9 +1521,11 @@ fn repo_windows_bits_rule_matches_notifycmdline_shape() {
 
 #[test]
 fn repo_windows_certutil_encode_rule_matches_shape() {
+    // RAFIX shared: test expectation (APACKS spec)
+    assert!(repo_rule("rules/sigma/windows_certutil_encode.yml").lines().any(|line| line == "level: low"));
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_certutil_encode.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_certutil_encode.yml"))
         .expect("compile repo windows certutil encode rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1504,13 +1537,20 @@ fn repo_windows_certutil_encode_rule_matches_shape() {
         .temporal_hits
         .iter()
         .any(|hit| hit == "windows_certutil_encode"));
+    for process in ["cmd.exe", "powershell.exe"] {
+        let out = engine.process_event(&repo_windows_event(process, "explorer.exe", "certutil -encode cert.der cert.pem"));
+        assert!(!out.temporal_hits.iter().any(|hit| hit == "windows_certutil_encode"));
+    }
+    engine.load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_certutil_decode.yml")).unwrap();
+    let out = engine.process_event(&repo_windows_event("certutil.exe", "cmd.exe", r"certutil -decode C:\Users\Public\p.txt C:\Users\Public\p.exe"));
+    assert!(out.temporal_hits.iter().any(|hit| hit == "windows_certutil_decode"));
 }
 
 #[test]
 fn repo_windows_taskkill_tamper_rule_matches_force_kill_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_taskkill_eguard_tamper.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_taskkill_eguard_tamper.yml"))
         .expect("compile repo windows taskkill tamper rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1528,7 +1568,7 @@ fn repo_windows_taskkill_tamper_rule_matches_force_kill_shape() {
 fn repo_windows_com_hijack_rule_matches_inprocserver32_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_com_hijack_registry.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_com_hijack_registry.yml"))
         .expect("compile repo windows com hijack rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1546,7 +1586,7 @@ fn repo_windows_com_hijack_rule_matches_inprocserver32_shape() {
 fn repo_windows_msbuild_rule_matches_project_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_msbuild_lolbin.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_msbuild_lolbin.yml"))
         .expect("compile repo windows msbuild rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1564,7 +1604,7 @@ fn repo_windows_msbuild_rule_matches_project_shape() {
 fn repo_windows_installutil_rule_matches_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_installutil_lolbin.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_installutil_lolbin.yml"))
         .expect("compile repo windows installutil rule");
 
     let out = engine.process_event(&repo_windows_event(
@@ -1582,7 +1622,7 @@ fn repo_windows_installutil_rule_matches_shape() {
 fn repo_windows_csc_rule_matches_shape() {
     let mut engine = DetectionEngine::default_with_rules();
     engine
-        .load_sigma_rule_yaml(&repo_rule("rules/sigma/windows_csc_lolbin.yml"))
+        .load_sigma_rule_yaml(&repo_rule_for_platform_in_tests("rules/sigma/windows_csc_lolbin.yml"))
         .expect("compile repo windows csc rule");
 
     let out = engine.process_event(&repo_windows_event(

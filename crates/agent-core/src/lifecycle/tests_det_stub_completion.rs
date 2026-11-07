@@ -1,4 +1,5 @@
 use super::*;
+// RAFIX shared: loader/swap fixture literals obey fail-closed YARA conditions.
 use crate::config::AgentConfig;
 use detection::{DetectionEngine, MlModel};
 use std::path::{Path, PathBuf};
@@ -135,7 +136,7 @@ rule corroboration_mismatch_marker {
   strings:
     $m = "corroboration-mismatch-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#,
     )
@@ -203,7 +204,7 @@ rule version_mismatch_marker {
   strings:
     $m = "version-mismatch-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#,
     )
@@ -603,7 +604,7 @@ rule bootstrap_last_known_good_yara {
   strings:
     $m = "bootstrap-last-known-good-marker"
   condition:
-    $m
+    $m at 0 and filesize <= 128
 }
 "#,
     )

@@ -1,28 +1,18 @@
+# Retained until the ACORE merge target proves the same attack/quiet cases.
 title: linux_download_exec
 id: linux_download_exec
-status: experimental
-tags:
-  - attack.t1105
-  - attack.t1059
-mitre_techniques:
-  - T1105
-  - T1059
-
+level: medium
+status: "experimental"
+tags: ["attack.t1105","attack.t1059"]
+mitre_techniques: ["T1105","T1059"]
+logsource:
+  product: linux
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - curl
-        - wget
-        - fetch
-      command_line_contains:
-        - "http://"
-        - "https://"
+      process_any_of: [bash, sh, dash, zsh, ksh]
+      command_line_all_groups:
+        - ['curl ', 'wget ']
+        - ['http://', 'https://']
+        - ['|bash', '| bash', '|sh', '| sh']
       within_secs: 30
-    - event_class: process_exec
-      process_any_of:
-        - bash
-        - sh
-        - python
-        - python3
-      within_secs: 20

@@ -8,7 +8,7 @@ rule test_rule {
   strings:
     $a = "evil_payload"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 "#;
 
@@ -39,10 +39,10 @@ rule test_rule {
         parent_process: "sshd".to_string(),
         session_id: 0,
         file_path: Some(marker_file.display().to_string()),
-        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        // RAFIX shared: preserve image/unlink schema and write-intent scan fixtures.
         process_exe: None,
         file_unlink: false,
-        file_write: false,
+        file_write: true,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
@@ -81,7 +81,7 @@ rule sample_from_dir {
   strings:
     $x = "abc123"
   condition:
-    $x
+    $x at 0 and filesize <= 128
 }
 "#,
     )
@@ -101,10 +101,10 @@ rule sample_from_dir {
         parent_process: "bash".to_string(),
         session_id: 0,
         file_path: Some(path.to_string_lossy().into_owned()),
-        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        // RAFIX shared: preserve image/unlink schema and write-intent scan fixtures.
         process_exe: None,
         file_unlink: false,
-        file_write: false,
+        file_write: true,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
@@ -118,7 +118,7 @@ rule sample_from_dir {
     };
 
     let sample = base.join("payload.bin");
-    std::fs::write(&sample, b"xxabc123yy").expect("write payload");
+    std::fs::write(&sample, b"abc123yy").expect("write payload");
     let payload_event = TelemetryEvent {
         file_path: Some(sample.to_string_lossy().into_owned()),
         ..event
@@ -162,7 +162,7 @@ rule elf_marker {
   strings:
     $a = "ELF"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 "#;
 
@@ -180,10 +180,10 @@ rule elf_marker {
         parent_process: "bash".to_string(),
         session_id: 0,
         file_path: Some("/usr/bin/cat".to_string()),
-        // RAFIX shared: default optional image and unlink semantics in existing fixtures.
+        // RAFIX shared: preserve image/unlink schema and write-intent scan fixtures.
         process_exe: None,
         file_unlink: false,
-        file_write: false,
+        file_write: true,
         file_hash: None,
         dst_port: None,
         dst_ip: None,
@@ -221,13 +221,108 @@ rule rust_backend_rule {
   strings:
     $x = "abc123xyz"
   condition:
-    $x
+    $x at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load rule");
     assert_eq!(loaded, 1);
 
-    let hits = backend.scan_bytes("memory", b"hello abc123xyz world");
+    let hits = backend.scan_bytes("memory", b"abc123xyz world");
     assert!(hits.iter().any(|h| h.rule_name == "rust_backend_rule"));
+}
+
+#[test]
+fn cache_reuses_verdict_and_invalidates_content_and_rule_changes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct CountingBackend(Arc<AtomicUsize>);
+    impl YaraBackend for CountingBackend {
+        fn load_rules_str(&mut self, _: &str) -> Result<usize> {
+            Ok(1)
+        }
+        fn scan_bytes(&self, _: &str, _: &[u8]) -> Vec<YaraHit> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Vec::new()
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut engine = YaraEngine::new();
+    engine.backend = Box::new(CountingBackend(Arc::clone(&calls)));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("payload");
+    fs::write(&path, b"one").unwrap();
+    let event: TelemetryEvent = serde_json::from_value(serde_json::json!({"ts_unix":1,"event_class":"ProcessExec","pid":42,"ppid":1,"uid":1000,"process":"synthetic","parent_process":"test","session_id":42,"file_path":path.to_str(),"file_write":false,"container_escape":false,"container_privileged":false})).unwrap();
+    engine.scan_event(&event);
+    engine.scan_event(&event);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let mut write = event.clone();
+    write.event_class = EventClass::FileOpen;
+    write.file_write = true;
+    engine.scan_event(&write);
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        2,
+        "writes must bypass possibly restored metadata"
+    );
+    engine.scan_event(&event);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    fs::write(&path, b"two_changed").unwrap();
+    engine.scan_event(&event);
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
+    engine.load_rules_str("new rules").unwrap();
+    engine.scan_event(&event);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+}
+
+#[test]
+fn compiled_fallback_rules_are_shared_across_shards() {
+    let source = r#"
+rule eguard_shared_fixture {
+  strings:
+    $x = "synthetic"
+  condition:
+    $x at 0 and filesize <= 128
+}
+"#;
+    let mut first = SubstringYaraBackend::default();
+    let mut second = SubstringYaraBackend::default();
+    first.load_rules_str(source).unwrap();
+    second.load_rules_str(source).unwrap();
+    assert!(Arc::ptr_eq(&first.rules[0], &second.rules[0]));
+}
+
+#[test]
+fn system_root_exclusions_cover_windows_and_macos_with_boundaries() {
+    for p in [
+        r"C:\Windows\System32\notepad.exe",
+        r"d:\WINDOWS\SysWOW64\cmd.exe",
+        "/System/Library/test",
+    ] {
+        assert!(is_excluded_process_exec_path(p), "{p}");
+    }
+    for p in [
+        r"C:\WindowsBackup\payload.exe",
+        r"C:\Windows\Temp\payload.exe",
+        r"D:\Windows\Tasks\payload.exe",
+        "/System/Volumes/Data/Users/synthetic/payload",
+        "/SystemBackup/payload",
+        "/tmp/payload",
+    ] {
+        assert!(!is_excluded_process_exec_path(p), "{p}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn verdict_cache_never_exceeds_entry_ceiling() {
+    let engine = YaraEngine::new();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..514 {
+        let path = dir.path().join(format!("synthetic-{i}"));
+        fs::write(&path, b"clean").unwrap();
+        let event: TelemetryEvent = serde_json::from_value(serde_json::json!({"ts_unix":1,"event_class":"ProcessExec","pid":42,"ppid":1,"uid":1000,"process":"synthetic","parent_process":"test","session_id":42,"file_path":path.to_str(),"file_write":false,"container_escape":false,"container_privileged":false})).unwrap();
+        assert!(engine.scan_event(&event).is_empty());
+        let len = engine.verdicts.lock().unwrap().len();
+        assert!(len > 0 && len <= 512, "cache entries: {len}");
+    }
 }

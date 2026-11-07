@@ -57,7 +57,8 @@ def test_merge_plain_iocs_preserves_provenance_and_sorts(tmp_path, monkeypatch):
     assert merged["confidence"] == "medium"
     assert merged["sources"] == ["c2_tracker", "zeta"]
     assert merged["first_seen"] == "2026-07-01T00:00:00+00:00"
-    assert merged["last_seen"] == "2026-07-02T00:00:00+00:00"
+    # An undated supplement is not a new observation of the original feed.
+    assert merged["last_seen"] == "2026-07-01T01:00:00+00:00"
 
     added = rows[2]
     assert added["confidence"] == "medium"
@@ -115,4 +116,4 @@ def test_merge_plain_iocs_uses_max_confidence_and_min_max_times(tmp_path, monkey
     assert row["confidence"] == "high"
     assert row["sources"] == ["abusech", "phishing_database"]
     assert row["first_seen"] == "2026-06-01T00:00:00+00:00"
-    assert row["last_seen"] == "2026-07-02T00:00:00+00:00"
+    assert row["last_seen"] == "2026-06-02T00:00:00+00:00"

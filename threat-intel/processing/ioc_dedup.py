@@ -15,6 +15,7 @@ Confidence scoring:
 """
 
 import argparse
+import ipaddress
 import json
 import os
 import sys
@@ -46,6 +47,9 @@ SOURCE_TIERS: dict[str, int] = {
     "otx": 4,
     "alienvault": 4,
     "other": 4,
+    "c2_tracker": 2,
+    "phishing_database": 3,
+    "tor_exit_list": 3,
 }
 
 # Staleness thresholds (days)
@@ -60,8 +64,8 @@ CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_LOW = "low"
 
 
-def parse_ioc_file(path: str) -> list[dict]:
-    """Parse an IOC file (one IOC per line, optional JSON metadata)."""
+def parse_ioc_file(path: str, *, preserve_provenance: bool = False) -> list[dict]:
+    """Parse raw feeds; only trusted re-curation may retain merged provenance."""
     entries = []
     source_name = infer_source(path)
 
@@ -73,16 +77,21 @@ def parse_ioc_file(path: str) -> list[dict]:
             # Try JSON-lines format first
             try:
                 entry = json.loads(line)
-                entry.setdefault("source", source_name)
-                entries.append(entry)
-                continue
+                if isinstance(entry, dict):
+                    if not preserve_provenance:
+                        # Raw feed identity comes from the collector, not its content.
+                        entry["source"] = source_name
+                        entry.pop("sources", None)
+                    elif not entry.get("sources"):
+                        entry.setdefault("source", source_name)
+                    entries.append(entry)
+                    continue
             except (json.JSONDecodeError, ValueError):
                 pass
             # Plain text: one IOC value per line
             entries.append({
                 "value": line.split(",")[0].strip(),
                 "source": source_name,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
     return entries
 
@@ -132,64 +141,66 @@ def determine_confidence(sources: set[str]) -> str:
     return CONFIDENCE_LOW
 
 
-def is_stale(timestamp_str: str, ioc_type: str) -> bool:
-    """Check if an IOC entry is older than staleness threshold."""
-    max_age_days = STALENESS.get(ioc_type, 90)
+def parse_date(value: str) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
     try:
-        ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return False  # Can't parse → keep it
-    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-    return ts < cutoff
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def is_stale(timestamp_str: str, ioc_type: str) -> bool:
+    """Explicit invalid/future dates fail closed; undated feeds stay undated."""
+    if not timestamp_str:
+        return False
+    ts = parse_date(timestamp_str)
+    now = datetime.now(timezone.utc)
+    return ts is None or ts > now + timedelta(days=1) or ts < now - timedelta(days=STALENESS.get(ioc_type, 90))
 
 
 def deduplicate(entries: list[dict], ioc_type: str) -> list[dict]:
-    """Deduplicate IOCs, apply corroboration and staleness rules."""
+    """Expire each observation BEFORE it can corroborate a fresh source."""
     by_value: dict[str, dict] = {}
+    stale_count = 0
     for entry in entries:
-        val = entry.get("value", "").strip().lower()
+        val = str(entry.get("value", "")).strip().lower()
+        if ioc_type == "domains":
+            val = val.rstrip(".")
+        elif ioc_type == "ips":
+            try:
+                val = str(ipaddress.ip_network(val, strict=False) if "/" in val else ipaddress.ip_address(val))
+            except ValueError:
+                continue
         if not val:
             continue
-        if val not in by_value:
-            by_value[val] = {
-                "value": val,
-                "sources": set(),
-                "first_seen": entry.get("timestamp", ""),
-                "last_seen": entry.get("timestamp", ""),
-            }
-        by_value[val]["sources"].add(entry.get("source", "other"))
-        ts = entry.get("timestamp", "")
-        if ts:
-            if not by_value[val]["first_seen"] or ts < by_value[val]["first_seen"]:
-                by_value[val]["first_seen"] = ts
-            if not by_value[val]["last_seen"] or ts > by_value[val]["last_seen"]:
-                by_value[val]["last_seen"] = ts
-
-    results = []
-    stale_count = 0
-    for ioc in by_value.values():
-        last_seen = ioc.get("last_seen", "")
-        if last_seen and is_stale(last_seen, ioc_type):
+        last = entry.get("last_seen") or entry.get("last_online") or entry.get("timestamp") or entry.get("first_seen") or ""
+        if is_stale(last, ioc_type):
             stale_count += 1
             continue
-        confidence = determine_confidence(ioc["sources"])
-        results.append({
-            "value": ioc["value"],
-            "confidence": confidence,
-            "sources": sorted(ioc["sources"]),
-            "first_seen": ioc["first_seen"],
-            "last_seen": ioc["last_seen"],
-        })
+        first = entry.get("first_seen") or last
+        first_date, last_date = parse_date(first), parse_date(last)
+        first = first_date.isoformat() if first_date else ""
+        last = last_date.isoformat() if last_date else ""
+        item = by_value.setdefault(val, {"value": val, "sources": set(), "first_seen": "", "last_seen": ""})
+        sources = entry.get("sources")
+        if not isinstance(sources, list) or not sources:
+            sources = [entry.get("source") or "other"]
+        item["sources"].update(s for s in sources if isinstance(s, str) and s)
+        if first and (not item["first_seen"] or first < item["first_seen"]):
+            item["first_seen"] = first
+        if last and (not item["last_seen"] or last > item["last_seen"]):
+            item["last_seen"] = last
 
-    # Sort: high confidence first, then medium, then low
+    results = []
+    for item in by_value.values():
+        item["confidence"] = determine_confidence(item["sources"])
+        item["sources"] = sorted(item["sources"])
+        results.append(item)
     priority = {CONFIDENCE_HIGH: 0, CONFIDENCE_MEDIUM: 1, CONFIDENCE_LOW: 2}
     results.sort(key=lambda x: (priority.get(x["confidence"], 3), x["value"]))
-
-    print(f"  {ioc_type}: {len(results)} unique IOCs ({stale_count} stale removed)")
-    for conf in (CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW):
-        count = sum(1 for r in results if r["confidence"] == conf)
-        if count:
-            print(f"    {conf}: {count}")
+    print(f"  {ioc_type}: {len(results)} unique IOCs ({stale_count} stale observations removed)")
     return results
 
 

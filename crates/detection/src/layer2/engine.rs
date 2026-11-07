@@ -625,3 +625,24 @@ impl TemporalEngine {
         self.eviction_counters
     }
 }
+
+impl TemporalEngine {
+    // RAFIX shared: loaded rule identities (APACKS)
+    pub fn rule_names(&self) -> Vec<String> {
+        self.automata.iter().map(|rule| rule.name.clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod rule_names_tests {
+    use super::{TemporalEngine, TemporalRule};
+
+    #[test]
+    fn rule_names_preserve_insertion_order() {
+        let mut engine = TemporalEngine::new();
+        for name in ["first", "second"] {
+            engine.add_rule(TemporalRule { name: name.into(), stages: Vec::new() });
+        }
+        assert_eq!(engine.rule_names(), vec!["first", "second"]);
+    }
+}

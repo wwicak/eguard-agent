@@ -1,23 +1,19 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: windows_registry_runkey_persistence
 id: windows_registry_runkey_persistence
-status: experimental
+level: medium
+status: "experimental"
+tags: ["attack.t1547","attack.t1112"]
+mitre_techniques: ["T1547","T1112"]
 logsource:
   product: windows
   category: process_creation
-tags:
-  - attack.t1547
-  - attack.t1112
-mitre_techniques:
-  - T1547
-  - T1112
-
 detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of:
-        - reg.exe
-        - cmd.exe
-      command_line_contains:
-        - " add "
-        - CurrentVersion\\Run
-      within_secs: 30
+  selection_process:
+    Image|endswith: ['\reg.exe', '\powershell.exe', '\pwsh.exe']
+  selection_write:
+    CommandLine|contains: [' add ', new-itemproperty, set-itemproperty]
+  selection_path:
+    CommandLine|re: >-
+      \\currentversion\\(?:run(?:once)?|policies\\explorer\\run)(?:[\s"';]|$)
+  condition: selection_process and selection_write and selection_path

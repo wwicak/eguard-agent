@@ -560,6 +560,7 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+// RAFIX shared: loader/swap fixture literals obey fail-closed YARA conditions.
     use super::{
         build_detection_engine_with_ransomware_policy, configured_or_fallback_dirs,
         DetectionSourcePaths,
@@ -684,7 +685,7 @@ rule eguard_custom_dir_test {
   strings:
     $marker = "eguard-custom-yara-marker"
   condition:
-    $marker
+    $marker at 0 and filesize <= 128
 }
 "#,
         )
@@ -704,6 +705,8 @@ rule eguard_custom_dir_test {
 
         let mut event = base_event();
         event.event_class = EventClass::FileOpen;
+        // RAFIX shared: the loader sample models the completed file drop above, not a read.
+        event.file_write = true;
         event.file_path = Some(sample_path.to_string_lossy().to_string());
 
         let outcome = engine.process_event(&event);

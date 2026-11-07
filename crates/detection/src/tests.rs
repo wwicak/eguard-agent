@@ -2210,11 +2210,11 @@ detection:
       within_secs: 30
     - event_class: network_connect
       dst_port_not_in: [80, 443]
-      file_path_any_of: None,
-      file_path_contains: None,
       within_secs: 10
 "#;
 
+    // RAFIX shared: test expectation (APACKS spec)
+    // Omit absent constraints instead of relying on dropped "None," placeholders.
     let mut t = TemporalEngine::new();
     let name = t
         .add_sigma_rule_yaml(sigma_yaml)
@@ -2279,7 +2279,7 @@ detection:
 
 #[test]
 // AC-DET-023 AC-DET-171
-fn sigma_legacy_selection_compiles_and_fires_on_command_line() {
+fn sigma_legacy_auditd_logsource_is_rejected_without_telemetry() {
     let sigma_yaml = r#"
 title: sigma_legacy_cmdline
 logsource:
@@ -2295,23 +2295,15 @@ detection:
   condition: selection
 "#;
 
-    let mut engine = TemporalEngine::new();
-    let name = engine
-        .add_sigma_rule_yaml(sigma_yaml)
-        .expect("compile legacy sigma rule");
-    assert_eq!(name, "sigma_legacy_cmdline");
-
-    let mut e = event(10, EventClass::ProcessExec, "bash", "sshd", 1000);
-    e.pid = 901;
-    e.session_id = e.pid;
-    e.command_line = Some("bash --cpu-priority 5 --foo".to_string());
-    let hits = engine.observe(&e);
-    assert!(hits.iter().any(|v| v == "sigma_legacy_cmdline"));
+    // RAFIX shared: test expectation (APACKS spec)
+    // Process telemetry is not an auditd record; never reinterpret that logsource.
+    let err = compile_sigma_rule(sigma_yaml).expect_err("auditd is unobservable");
+    assert!(matches!(err, SigmaCompileError::Unsupported { reason: "unsupported_logsource", .. }));
 }
 
 #[test]
 // AC-DET-023 AC-DET-171
-fn sigma_legacy_condition_one_of_prefix_compiles_and_fires() {
+fn sigma_legacy_auditd_positional_argv_is_rejected() {
     let sigma_yaml = r#"
 title: sigma_legacy_one_of
 logsource:
@@ -2326,18 +2318,10 @@ detection:
   condition: 1 of cmd*
 "#;
 
-    let mut engine = TemporalEngine::new();
-    let name = engine
-        .add_sigma_rule_yaml(sigma_yaml)
-        .expect("compile legacy one-of sigma rule");
-    assert_eq!(name, "sigma_legacy_one_of");
-
-    let mut e = event(11, EventClass::ProcessExec, "bash", "sshd", 1000);
-    e.pid = 902;
-    e.session_id = e.pid;
-    e.command_line = Some("/usr/bin/miner --cpu-priority 4".to_string());
-    let hits = engine.observe(&e);
-    assert!(hits.iter().any(|v| v == "sigma_legacy_one_of"));
+    // RAFIX shared: test expectation (APACKS spec)
+    // a1/a2 positions are absent from the agent's process command-line telemetry.
+    let err = compile_sigma_rule(sigma_yaml).expect_err("auditd argv is unavailable");
+    assert!(matches!(err, SigmaCompileError::Unsupported { reason: "unsupported_logsource", .. }));
 }
 
 #[test]
@@ -2416,7 +2400,8 @@ detection:
     let err = compile_sigma_ast(sigma_yaml)
         .expect_err("keyword-only legacy sigma without usable constraints must be rejected");
     assert!(
-        matches!(err, SigmaCompileError::UnsupportedEventClass(ref reason) if reason == "legacy_sigma_unmappable"),
+        // RAFIX shared: test expectation (APACKS spec)
+        matches!(err, SigmaCompileError::Unsupported { reason: "unsupported_logsource", .. }),
         "unexpected error: {err}"
     );
 }
@@ -2424,20 +2409,23 @@ detection:
 #[test]
 fn uncurated_substring_yara_never_drives_confidence() {
     let mut engine = DetectionEngine::default_with_rules();
-    engine
+    // RAFIX shared: test expectation (APACKS spec)
+    let loaded = engine
         .load_yara_rules_str(
             r#"
-rule suspicious_payload {
+rule eguard_fixture_suspicious_payload {
   strings:
     $a = "malware-test-marker"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load yara rules");
+    assert_eq!(loaded, 1);
 
     let mut ev = event(1, EventClass::FileOpen, "bash", "sshd", 1000);
+    ev.file_write = true;
     // YARA now only scans file content, not command lines.
     // Create a temp file with the marker for the engine to scan.
     let tmp_dir = std::env::temp_dir().join(format!(
@@ -2455,8 +2443,12 @@ rule suspicious_payload {
     let out = engine.process_event(&ev);
 
     // Standalone YARA hit → High (not Definite, which is reserved for IOC exact matches)
-    assert!(out.confidence < Confidence::High);
-    assert!(out.yara_hits.is_empty());
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+    assert_eq!(out.confidence, Confidence::High);
+    assert!(out
+        .yara_hits
+        .iter()
+        .any(|hit| hit.rule_name == "eguard_fixture_suspicious_payload"));
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
 
@@ -2466,18 +2458,21 @@ fn exact_ioc_file_match_preserves_yara_hits_for_known_malware() {
     engine.layer1.load_hashes([
         "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string(),
     ]);
-    engine
+    // RAFIX shared: test expectation (APACKS spec)
+    let loaded = engine
         .load_yara_rules_str(
             r#"
-rule eguard_eicar_test {
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+rule eguard_fixture_eicar_signature {
   strings:
     $eicar = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
   condition:
-    $eicar
+    $eicar at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load eicar yara rule");
+    assert_eq!(loaded, 1);
 
     let tmp_dir = std::env::temp_dir().join(format!(
         "eguard-eicar-marker-{}",
@@ -2495,6 +2490,7 @@ rule eguard_eicar_test {
     .unwrap();
 
     let mut ev = event(3, EventClass::FileOpen, "bash", "sshd", 1000);
+    ev.file_write = true;
     ev.file_path = Some(eicar_file.display().to_string());
     ev.file_hash =
         Some("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f".to_string());
@@ -2508,7 +2504,8 @@ rule eguard_eicar_test {
     assert!(out
         .yara_hits
         .iter()
-        .any(|hit| hit.rule_name == "eguard_eicar_test"));
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+        .any(|hit| hit.rule_name == "eguard_fixture_eicar_signature"));
 
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
@@ -2516,18 +2513,22 @@ rule eguard_eicar_test {
 #[test]
 fn process_exec_system_binary_does_not_surface_yara_hits() {
     let mut engine = DetectionEngine::default_with_rules();
-    engine
+    // RAFIX shared: test expectation (APACKS spec)
+    let loaded = engine
         .load_yara_rules_str(
             r#"
-rule elf_marker {
+rule eguard_fixture_elf_marker {
   strings:
     $a = "ELF"
   condition:
-    $a
+    $a at 0 and filesize <= 128
 }
 "#,
         )
         .expect("load yara rules");
+    assert_eq!(loaded, 1);
+    assert_eq!(engine.yara.scan_bytes("positive control", b"ELF").len(), 1);
+    assert!(crate::yara_engine::is_excluded_process_exec_path("/usr/bin/cat"));
 
     let mut ev = event(4, EventClass::ProcessExec, "cat", "bash", 0);
     ev.file_path = Some("/usr/bin/cat".to_string());

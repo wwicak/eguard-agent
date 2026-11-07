@@ -3,10 +3,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
-use detection::DetectionEngine;
+use detection::{DetectionEngine, SigmaCompileError, SigmaLoadError};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::{resolve_rules_staging_root, verify_bundle_signature};
 
@@ -166,13 +166,9 @@ fn load_bundle_rules_from_file(detection: &mut DetectionEngine, path: &Path) -> 
 
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("yml") | Some("yaml") => {
-            match fs::read_to_string(path)
-                .ok()
-                .and_then(|source| detection.load_sigma_rule_yaml(&source).ok())
-            {
-                Some(_) => sigma_loaded += 1,
-                None => warn!(path = %path.display(), "failed loading SIGMA bundle file"),
-            }
+            let counts = load_sigma_rule_files(detection, &[path.to_path_buf()]);
+            sigma_loaded += counts.loaded;
+            report_sigma_load(&counts);
         }
         Some("yar") | Some("yara") => {
             match fs::read_to_string(path)
@@ -205,12 +201,18 @@ fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (
     push_unique_dir(&mut yara_dirs, path.join("rules/yara"));
     push_unique_dir(&mut yara_dirs, path.join("detection/yara"));
 
+    let mut sigma_counts = SigmaFileCounts::default();
     for dir in sigma_dirs {
         if !dir.is_dir() {
             continue;
         }
-        sigma_loaded += load_sigma_rules_recursive(detection, &dir);
+        let counts = load_sigma_rules_recursive(detection, &dir);
+        sigma_counts.loaded += counts.loaded;
+        sigma_counts.platform_skipped += counts.platform_skipped;
+        sigma_counts.failed += counts.failed;
     }
+    sigma_loaded += sigma_counts.loaded;
+    report_sigma_load(&sigma_counts);
 
     for dir in yara_dirs {
         if !dir.is_dir() {
@@ -222,48 +224,61 @@ fn load_bundle_rules_from_dir(detection: &mut DetectionEngine, path: &Path) -> (
     (sigma_loaded, yara_loaded)
 }
 
-/// Sleep between every rule.  2 seconds gives the async heartbeat task
-/// time to complete a full gRPC round-trip (typically <1s).  This slows
-/// the total bundle load to ~30min for a 1000-rule bundle, which is
-/// acceptable because server-side IOC rules provide detection coverage
-/// immediately while the agent-side rules load incrementally.
-const RULE_LOAD_YIELD_SLEEP: std::time::Duration = std::time::Duration::from_secs(2);
+#[derive(Default)]
+struct SigmaFileCounts {
+    loaded: usize,
+    platform_skipped: usize,
+    failed: usize,
+}
 
-fn load_sigma_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usize {
-    let mut loaded = 0usize;
-    let rule_files = collect_rule_files_recursive(dir, &["yml", "yaml"]);
+fn report_sigma_load(counts: &SigmaFileCounts) {
+    info!(
+        loaded = counts.loaded,
+        platform_skipped = counts.platform_skipped,
+        failed = counts.failed,
+        "SIGMA bundle load summary"
+    );
+}
 
-    for (idx, path) in rule_files.iter().enumerate() {
-        // Pause between rules, but not before the first rule.
-        if idx > 0 {
-            std::thread::sleep(RULE_LOAD_YIELD_SLEEP);
-        }
+fn load_sigma_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> SigmaFileCounts {
+    load_sigma_rule_files(
+        detection,
+        &collect_rule_files_recursive(dir, &["yml", "yaml"]),
+    )
+}
 
+fn load_sigma_rule_files(detection: &mut DetectionEngine, paths: &[PathBuf]) -> SigmaFileCounts {
+    let mut counts = SigmaFileCounts::default();
+    for path in paths {
         match fs::read_to_string(path) {
             Ok(source) => match detection.load_sigma_rule_yaml(&source) {
-                Ok(_) => loaded += 1,
+                Ok(_) => counts.loaded += 1,
+                Err(SigmaLoadError::Compile(SigmaCompileError::Unsupported {
+                    reason: "unsupported_platform",
+                    detail,
+                })) => {
+                    counts.platform_skipped += 1;
+                    debug!(platform = %detail, path = %path.display(), "skipping foreign-platform SIGMA bundle rule");
+                }
                 Err(err) => {
-                    warn!(error = %err, path = %path.display(), "failed loading SIGMA bundle rule")
+                    counts.failed += 1;
+                    warn!(error = %err, path = %path.display(), "failed loading SIGMA bundle rule");
                 }
             },
             Err(err) => {
-                warn!(error = %err, path = %path.display(), "failed reading SIGMA bundle rule")
+                counts.failed += 1;
+                warn!(error = %err, path = %path.display(), "failed reading SIGMA bundle rule");
             }
         }
     }
-
-    loaded
+    counts
 }
 
 fn load_yara_rules_recursive(detection: &mut DetectionEngine, dir: &Path) -> usize {
     let mut loaded = 0usize;
     let rule_files = collect_rule_files_recursive(dir, &["yar", "yara"]);
 
-    for (idx, path) in rule_files.iter().enumerate() {
-        if idx > 0 {
-            std::thread::sleep(RULE_LOAD_YIELD_SLEEP);
-        }
-
+    for path in &rule_files {
         match fs::read_to_string(path) {
             Ok(source) => match detection.load_yara_rules_str(&source) {
                 Ok(count) => loaded += count,
@@ -362,7 +377,7 @@ fn load_signed_bundle_archive_full(
     }
 
     let summary = load_bundle_all_layers(detection, &extraction_dir);
-    if let Err(err) = corroborate_summary_against_manifest(&summary, &manifest) {
+    if let Err(err) = corroborate_summary_against_manifest(&summary, &manifest, &extraction_dir) {
         warn!(error = %err, path = %bundle_path.display(), "signed bundle manifest count corroboration failed");
     }
 
@@ -550,6 +565,7 @@ fn verify_manifest_file_hashes(
 fn corroborate_summary_against_manifest(
     summary: &BundleLoadSummary,
     manifest: &BundleManifest,
+    bundle_dir: &Path,
 ) -> std::result::Result<(), String> {
     let mut mismatches = Vec::new();
 
@@ -568,13 +584,13 @@ fn corroborate_summary_against_manifest(
         &mut mismatches,
         "sigma_count",
         manifest.sigma_count,
-        summary.sigma_loaded,
+        count_bundle_rule_files(bundle_dir, "sigma", &["yml", "yaml"]),
     );
     record_manifest_count_mismatch(
         &mut mismatches,
         "yara_count",
         manifest.yara_count,
-        summary.yara_loaded,
+        count_bundle_rule_files(bundle_dir, "yara", &["yar", "yara"]),
     );
     record_manifest_count_mismatch(
         &mut mismatches,
@@ -622,6 +638,19 @@ fn corroborate_summary_against_manifest(
     } else {
         Err(mismatches.join(", "))
     }
+}
+
+fn count_bundle_rule_files(bundle_dir: &Path, family: &str, extensions: &[&str]) -> usize {
+    [
+        family.to_string(),
+        format!("rules/{family}"),
+        format!("detection/{family}"),
+    ]
+    .iter()
+    .map(|relative| bundle_dir.join(relative))
+    .filter(|path| path.is_dir())
+    .map(|path| collect_rule_files_recursive(&path, extensions).len())
+    .sum()
 }
 
 fn record_manifest_count_mismatch(
@@ -927,3 +956,7 @@ fn should_use_ioc_exact_store() -> bool {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "rule_bundle_loader_tests.rs"]
+mod tests;

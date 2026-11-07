@@ -1,22 +1,17 @@
+# eGuard-authored endpoint rule; GPL-2.0-or-later.
 title: windows_certutil_download
 id: windows_certutil_download
-status: experimental
-tags:
-  - attack.t1105
-  - attack.t1218
-mitre_techniques:
-  - T1105
-  - T1218
-
+level: high
+status: "experimental"
+tags: ["attack.t1105","attack.t1218"]
+mitre_techniques: ["T1105","T1218"]
+logsource:
+  product: windows
 detection:
   sequence:
     - event_class: process_exec
-      process_any_of:
-        - certutil.exe
-        - cmd.exe
-        - powershell.exe
-        - pwsh.exe
-      command_line_contains:
-        - "certutil.exe -urlcache"
-        - "certutil -urlcache"
+      process_any_of: [certutil.exe]
+      command_line_all_groups:
+        - ["urlcache", "verifyctl"]
+        - ["http://", "https://"]
       within_secs: 30

@@ -1,5 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
+
+use crate::sigma_expr::{SigmaExpr, SigmaField};
+use regex::RegexBuilder;
 
 use serde::{Deserialize, Deserializer};
 use serde_yaml::{Mapping, Value};
@@ -36,8 +40,14 @@ pub enum TemporalExpr {
 pub enum SigmaCompileError {
     ParseYaml(String),
     MissingDetectionSequence,
-    MissingStageWindow { stage_index: usize },
+    MissingStageWindow {
+        stage_index: usize,
+    },
     UnsupportedEventClass(String),
+    Unsupported {
+        reason: &'static str,
+        detail: String,
+    },
 }
 
 impl fmt::Display for SigmaCompileError {
@@ -53,6 +63,7 @@ impl fmt::Display for SigmaCompileError {
             Self::MissingStageWindow { stage_index } => {
                 write!(f, "sigma stage {} must define within_secs", stage_index)
             }
+            Self::Unsupported { reason, detail } => write!(f, "{}: {}", reason, detail),
             Self::UnsupportedEventClass(value) => {
                 write!(f, "unsupported sigma event_class: {}", value)
             }
@@ -94,6 +105,7 @@ struct SigmaDetection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SigmaStage {
     event_class: String,
     #[serde(default, deserialize_with = "deserialize_string_vec_lenient")]
@@ -117,39 +129,19 @@ struct SigmaStage {
     #[serde(default)]
     require_file_write: bool,
     #[serde(default)]
+    command_line_all_groups: Vec<Vec<String>>,
+    #[serde(default)]
+    command_line_not_contains: Vec<String>,
+    #[serde(default)]
+    process_not_any_of: Vec<String>,
+    #[serde(default)]
+    parent_not_any_of: Vec<String>,
+    #[serde(default)]
+    file_path_not_contains: Vec<String>,
+    #[serde(default)]
+    process_starts_with: Vec<String>,
+    #[serde(default)]
     within_secs: Option<u64>,
-}
-
-#[derive(Debug, Default)]
-struct LegacySigmaAccumulator {
-    process_any_of: HashSet<String>,
-    parent_any_of: HashSet<String>,
-    command_line_contains: HashSet<String>,
-    file_path_any_of: HashSet<String>,
-    file_path_contains: HashSet<String>,
-    dst_port_any_of: HashSet<u16>,
-}
-
-impl LegacySigmaAccumulator {
-    fn has_process_constraints(&self) -> bool {
-        !self.process_any_of.is_empty()
-            || !self.parent_any_of.is_empty()
-            || !self.command_line_contains.is_empty()
-    }
-
-    fn has_file_constraints(&self) -> bool {
-        !self.file_path_any_of.is_empty() || !self.file_path_contains.is_empty()
-    }
-
-    fn has_network_constraints(&self) -> bool {
-        !self.dst_port_any_of.is_empty()
-    }
-
-    fn has_any_constraints(&self) -> bool {
-        self.has_process_constraints()
-            || self.has_file_constraints()
-            || self.has_network_constraints()
-    }
 }
 
 pub fn compile_sigma_rule(yaml: &str) -> Result<TemporalRule> {
@@ -158,9 +150,54 @@ pub fn compile_sigma_rule(yaml: &str) -> Result<TemporalRule> {
 }
 
 pub fn compile_sigma_ast(yaml: &str) -> Result<BoundedTemporalAst> {
-    let doc: SigmaRuleDoc =
+    if yaml.len() > 256 * 1024 {
+        return Err(unsupported("resource_limit", "rule exceeds 256 KiB"));
+    }
+    let raw: Value =
         serde_yaml::from_str(yaml).map_err(|err| SigmaCompileError::ParseYaml(err.to_string()))?;
+    let root = raw
+        .as_mapping()
+        .ok_or_else(|| unsupported("unsupported_document", "mapping required"))?;
+    for key in root.keys() {
+        if !key.as_str().is_some_and(|k| {
+            matches!(
+                k,
+                "title"
+                    | "id"
+                    | "status"
+                    | "description"
+                    | "references"
+                    | "author"
+                    | "date"
+                    | "modified"
+                    | "tags"
+                    | "logsource"
+                    | "detection"
+                    | "falsepositives"
+                    | "level"
+                    | "license"
+                    | "related"
+                    | "fields"
+                    | "scope"
+                    | "mitre_techniques"
+                    | "simulation"
+            )
+        }) {
+            return Err(unsupported("unsupported_document", "unknown root key"));
+        }
+    }
+    if let Some(detection) = mapping_get(root, "detection").and_then(Value::as_mapping) {
+        if mapping_get(detection, "sequence").is_some() && detection.len() != 1 {
+            return Err(unsupported(
+                "unsupported_condition",
+                "mixed sequence and selectors",
+            ));
+        }
+    }
+    let doc: SigmaRuleDoc =
+        serde_yaml::from_value(raw).map_err(|err| SigmaCompileError::ParseYaml(err.to_string()))?;
 
+    validate_platform(&doc.logsource)?;
     if !doc.detection.sequence.is_empty() {
         return compile_sequence_sigma_ast(doc);
     }
@@ -178,10 +215,15 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
 
         stages.push(AstStage {
             predicate: TemporalPredicate {
-                sigma: None,
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+                sigma: Some(Arc::new(sequence_expr(&stage)?)),
                 event_class,
                 process_any_of: into_set(stage.process_any_of),
-                process_starts_with: None,
+                process_starts_with: if stage.process_starts_with.is_empty() {
+                    None
+                } else {
+                    Some(stage.process_starts_with)
+                },
                 parent_any_of: into_set(stage.parent_any_of),
                 uid_eq: stage.uid_eq,
                 uid_ne: stage.uid_ne,
@@ -214,448 +256,431 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
     })
 }
 
-fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTemporalAst> {
-    let root: Value =
-        serde_yaml::from_str(yaml).map_err(|err| SigmaCompileError::ParseYaml(err.to_string()))?;
-    let Some(root_map) = root.as_mapping() else {
-        return Err(SigmaCompileError::MissingDetectionSequence);
-    };
-
-    let Some(detection) = mapping_get(root_map, "detection").and_then(Value::as_mapping) else {
-        return Err(SigmaCompileError::MissingDetectionSequence);
-    };
-
-    let condition = mapping_get(detection, "condition")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or("selection");
-
-    let selector_names = select_legacy_selector_names(detection, condition);
-    if selector_names.is_empty() {
-        return Err(SigmaCompileError::MissingDetectionSequence);
+fn unsupported(reason: &'static str, detail: impl Into<String>) -> SigmaCompileError {
+    SigmaCompileError::Unsupported {
+        reason,
+        detail: detail.into(),
     }
+}
 
-    let mut acc = LegacySigmaAccumulator::default();
-    for selector in selector_names {
-        if let Some(value) = mapping_get(detection, &selector) {
-            accumulate_legacy_selector_value(value, &mut acc);
-        }
-    }
-
-    if !acc.has_any_constraints() {
-        return Err(SigmaCompileError::UnsupportedEventClass(
-            "legacy_sigma_unmappable".to_string(),
+fn validate_platform(ls: &SigmaLogSource) -> Result<()> {
+    if !ls.service.is_empty()
+        || (!ls.category.is_empty()
+            && !matches!(
+                ls.category.as_str(),
+                "process_creation" | "file_event" | "network_connection" | "dns"
+            ))
+    {
+        return Err(unsupported(
+            "unsupported_logsource",
+            format!("{}/{}", ls.category, ls.service),
         ));
     }
+    let product = ls.product.to_ascii_lowercase();
+    if !product.is_empty() && product != std::env::consts::OS {
+        return Err(unsupported("unsupported_platform", product));
+    }
+    Ok(())
+}
 
-    let event_class = infer_legacy_event_class(&acc, &doc.logsource).ok_or_else(|| {
-        SigmaCompileError::UnsupportedEventClass("legacy_sigma_unmappable".to_string())
-    })?;
-
-    let stage = AstStage {
-        predicate: TemporalPredicate {
-            sigma: None,
-            event_class,
-            process_any_of: some_set(acc.process_any_of),
-            process_starts_with: None,
-            parent_any_of: some_set(acc.parent_any_of),
-            uid_eq: None,
-            uid_ne: None,
-            dst_port_not_in: None,
-            dst_port_any_of: some_u16_set(acc.dst_port_any_of),
-            file_path_any_of: some_set(acc.file_path_any_of),
-            file_path_contains: some_set(acc.file_path_contains),
-            command_line_contains: some_set(acc.command_line_contains),
-            require_file_write: false,
-            require_credential_source: false,
-            ..Default::default()
-        },
-        within_secs: 30,
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTemporalAst> {
+    let event_class = match (
+        doc.logsource.category.as_str(),
+        doc.logsource.service.as_str(),
+    ) {
+        ("process_creation", "") => EventClass::ProcessExec,
+        ("file_event", "") => EventClass::FileOpen,
+        ("network_connection", "") => EventClass::NetworkConnect,
+        ("dns", "") => EventClass::DnsQuery,
+        _ => {
+            return Err(unsupported(
+                "unsupported_logsource",
+                format!("{}/{}", doc.logsource.category, doc.logsource.service),
+            ))
+        }
     };
-
-    let name = doc
-        .title
-        .clone()
-        .and_then(non_empty)
-        .or_else(|| doc.id.clone().and_then(non_empty))
-        .unwrap_or_else(|| "sigma_unnamed_rule".to_string());
-
+    let root: Value =
+        serde_yaml::from_str(yaml).map_err(|err| SigmaCompileError::ParseYaml(err.to_string()))?;
+    let detection = root
+        .as_mapping()
+        .and_then(|r| mapping_get(r, "detection"))
+        .and_then(Value::as_mapping)
+        .ok_or(SigmaCompileError::MissingDetectionSequence)?;
+    if mapping_get(detection, "timeframe").is_some() {
+        return Err(unsupported("unsupported_condition", "timeframe"));
+    }
+    let condition = mapping_get(detection, "condition")
+        .and_then(Value::as_str)
+        .ok_or_else(|| unsupported("unsupported_condition", "condition must be a string"))?;
+    let mut selections = HashMap::new();
+    for (key, value) in detection {
+        let name = key
+            .as_str()
+            .ok_or_else(|| unsupported("unsupported_selection", "non-string selector"))?;
+        if name == "condition" {
+            continue;
+        }
+        if selections.len() >= 128 {
+            return Err(unsupported("resource_limit", "too many selectors"));
+        }
+        selections.insert(name.to_string(), compile_selection(value, event_class)?);
+    }
+    let tokens = tokenize(condition)?;
+    let mut parser = ConditionParser {
+        tokens: &tokens,
+        pos: 0,
+        selections: &selections,
+        depth: 0,
+        nodes: 0,
+    };
+    let expr = parser.or()?;
+    if parser.pos != tokens.len() {
+        return Err(unsupported("unsupported_condition", "trailing tokens"));
+    }
+    let predicate = TemporalPredicate {
+        sigma: Some(Arc::new(expr)),
+        event_class,
+        process_any_of: None,
+        process_starts_with: None,
+        parent_any_of: None,
+        uid_eq: None,
+        uid_ne: None,
+        dst_port_not_in: None,
+        dst_port_any_of: None,
+        file_path_any_of: None,
+        file_path_contains: None,
+        command_line_contains: None,
+        require_file_write: false,
+        require_credential_source: false,
+        ..Default::default()
+    };
     Ok(BoundedTemporalAst {
-        level: doc.level,
-        any_order: false,
-        name,
-        stages: vec![stage],
+// RAFIX shared: retain pack semantics alongside core grading and schema.
+        name: doc
+            .title
+            .clone()
+            .and_then(non_empty)
+            .or_else(|| doc.id.clone().and_then(non_empty))
+            .unwrap_or_else(|| "sigma_unnamed_rule".into()),
+        stages: vec![AstStage {
+            predicate,
+            within_secs: 30,
+        }],
         root: TemporalExpr::Stage(0),
     })
 }
 
-fn infer_legacy_event_class(
-    acc: &LegacySigmaAccumulator,
-    logsource: &SigmaLogSource,
-) -> Option<EventClass> {
-    if acc.has_process_constraints() {
-        return Some(EventClass::ProcessExec);
+fn compile_selection(value: &Value, event_class: EventClass) -> Result<SigmaExpr> {
+    if let Value::Sequence(items) = value {
+        if items.is_empty() || !items.iter().all(|v| v.is_mapping()) {
+            return Err(unsupported(
+                "unsupported_selection",
+                "keyword or empty selection",
+            ));
+        }
+        return Ok(SigmaExpr::Any(
+            items
+                .iter()
+                .map(|v| compile_selection(v, event_class))
+                .collect::<Result<_>>()?,
+        ));
     }
-    if acc.has_file_constraints() {
-        return Some(EventClass::FileOpen);
+    let map = value
+        .as_mapping()
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| unsupported("unsupported_selection", "selection must contain fields"))?;
+    let mut fields = Vec::new();
+    for (key, value) in map {
+        let key = key
+            .as_str()
+            .ok_or_else(|| unsupported("unsupported_field", "non-string field"))?;
+        fields.push(compile_field(key, value, event_class)?);
     }
-    if acc.has_network_constraints() {
-        return Some(EventClass::NetworkConnect);
-    }
-
-    let category = logsource.category.trim().to_ascii_lowercase();
-    let product = logsource.product.trim().to_ascii_lowercase();
-    let service = logsource.service.trim().to_ascii_lowercase();
-
-    if category.contains("process") || service.contains("auditd") {
-        Some(EventClass::ProcessExec)
-    } else if category.contains("file") {
-        Some(EventClass::FileOpen)
-    } else if category.contains("network") {
-        Some(EventClass::NetworkConnect)
-    } else if category.contains("dns") {
-        Some(EventClass::DnsQuery)
-    } else if product == "linux" && service == "auditd" {
-        Some(EventClass::ProcessExec)
-    } else {
-        None
-    }
+    Ok(SigmaExpr::All(fields))
 }
 
-fn select_legacy_selector_names(detection: &Mapping, condition: &str) -> Vec<String> {
-    let mut available = Vec::new();
-    for key in detection.keys() {
-        let Some(name) = key.as_str() else {
-            continue;
+fn compile_field(key: &str, value: &Value, event_class: EventClass) -> Result<SigmaExpr> {
+    let mut parts = key.split('|');
+    let field_name = parts.next().unwrap_or("");
+    let modifiers: Vec<_> = parts.collect();
+    let mut mode = "exact";
+    let mut all = false;
+    for m in modifiers {
+        match m {
+            "all" if !all => all = true,
+            "contains" | "startswith" | "endswith" | "re" | "cidr" if mode == "exact" => mode = m,
+            _ => return Err(unsupported("unsupported_modifier", key)),
+        }
+    }
+    let values = match value {
+        Value::Sequence(items) if !items.is_empty() => items.clone(),
+        Value::String(_) | Value::Number(_) => vec![value.clone()],
+        _ => return Err(unsupported("unsupported_value", key)),
+    };
+    let mut exprs = Vec::new();
+    for value in values {
+        let mut mode = mode;
+        let pattern = match value {
+            Value::String(s) if !s.is_empty() => s,
+            Value::Number(n) => n.to_string(),
+            _ => return Err(unsupported("unsupported_value", key)),
         };
-        if name.eq_ignore_ascii_case("condition") {
-            continue;
-        }
-        available.push(name.to_string());
-    }
-
-    if available.is_empty() {
-        return Vec::new();
-    }
-
-    let mut lookup = HashMap::new();
-    for name in &available {
-        lookup.insert(name.to_ascii_lowercase(), name.clone());
-    }
-
-    let sanitized = condition.replace(['(', ')', '\n'], " ");
-    let mut selected = HashSet::new();
-
-    for term in split_condition_terms(&sanitized) {
-        if term.is_empty() {
-            continue;
-        }
-
-        let mut positive = term.trim();
-        if let Some(rest) = strip_prefix_ci(positive, "not ") {
-            let _ = rest;
-            continue;
-        }
-
-        if let Some(rest) =
-            strip_prefix_ci(positive, "1 of ").or_else(|| strip_prefix_ci(positive, "all of "))
-        {
-            positive = rest.trim();
-            if let Some(prefix) = positive.strip_suffix('*') {
-                let prefix = prefix.trim().to_ascii_lowercase();
-                for name in &available {
-                    if name.to_ascii_lowercase().starts_with(&prefix) {
-                        selected.insert(name.clone());
+        let mut pattern = pattern.as_str();
+        let field = match field_name.to_ascii_lowercase().as_str() {
+            "commandline" => SigmaField::CommandLine,
+            "image" if event_class == EventClass::ProcessExec => SigmaField::ProcessPath,
+            "image" if mode == "endswith" && (pattern.starts_with('/') || pattern.starts_with('\\')) && !pattern[1..].contains(['/', '\\']) => {
+                // On file/network events only the executable basename is available.
+                pattern = &pattern[1..];
+                mode = "exact";
+                SigmaField::Process
+            }
+            "parentimage" => {
+                // Telemetry has a parent basename, not a parent image path.
+                if pattern.contains(['/', '\\']) {
+                    if mode == "endswith"
+                        && (pattern.starts_with('/') || pattern.starts_with('\\'))
+                        && !pattern[1..].contains(['/', '\\'])
+                    {
+                        pattern = &pattern[1..];
+                        mode = "exact";
+                    } else {
+                        return Err(unsupported(
+                            "unsupported_field",
+                            "ParentImage path unavailable",
+                        ));
                     }
                 }
-                continue;
+                SigmaField::Parent
             }
-        }
-
-        let key = positive.trim().to_ascii_lowercase();
-        if let Some(name) = lookup.get(&key) {
-            selected.insert(name.clone());
-        }
-    }
-
-    if selected.is_empty() {
-        if let Some(selection) = lookup.get("selection") {
-            selected.insert(selection.clone());
-        }
-    }
-
-    available
-        .into_iter()
-        .filter(|name| selected.contains(name))
-        .collect()
-}
-
-fn split_condition_terms(raw: &str) -> Vec<String> {
-    let mut terms = Vec::new();
-    let mut current = String::new();
-
-    for token in raw.split_whitespace() {
-        if token.eq_ignore_ascii_case("and") || token.eq_ignore_ascii_case("or") {
-            if !current.trim().is_empty() {
-                terms.push(current.trim().to_string());
-                current.clear();
+            "targetfilename" if event_class == EventClass::FileOpen => SigmaField::FilePath,
+            "destinationhostname" if event_class == EventClass::NetworkConnect => {
+                SigmaField::Domain
             }
-            continue;
-        }
-
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(token);
+            "query" if event_class == EventClass::DnsQuery => SigmaField::Domain,
+            "destinationip" if event_class == EventClass::NetworkConnect => SigmaField::Ip,
+            "destinationport" if event_class == EventClass::NetworkConnect => SigmaField::Port,
+            "uid" | "euid" => SigmaField::Uid,
+            _ => return Err(unsupported("unsupported_field", field_name)),
+        };
+        let expr = if matches!(field, SigmaField::Uid | SigmaField::Port) {
+            if mode != "exact" {
+                return Err(unsupported("unsupported_modifier", key));
+            }
+            let number = pattern
+                .parse::<u32>()
+                .map_err(|_| unsupported("unsupported_value", key))?;
+            if matches!(field, SigmaField::Port) && number > u16::MAX as u32 {
+                return Err(unsupported("unsupported_value", key));
+            }
+            SigmaExpr::Number(field, number)
+        } else if mode == "cidr" {
+            if !matches!(field, SigmaField::Ip) {
+                return Err(unsupported("unsupported_modifier", key));
+            }
+            let (address, prefix) = pattern
+                .split_once('/')
+                .ok_or_else(|| unsupported("invalid_cidr", pattern))?;
+            let ip = address
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| unsupported("invalid_cidr", pattern))?;
+            let prefix = prefix
+                .parse::<u8>()
+                .map_err(|_| unsupported("invalid_cidr", pattern))?;
+            if prefix > if ip.is_ipv4() { 32 } else { 128 } {
+                return Err(unsupported("invalid_cidr", pattern));
+            }
+            SigmaExpr::Cidr(ip, prefix)
+        } else {
+            text_expr(field, pattern, mode)?
+        };
+        exprs.push(expr);
     }
-
-    if !current.trim().is_empty() {
-        terms.push(current.trim().to_string());
-    }
-
-    terms
-}
-
-fn strip_prefix_ci<'a>(raw: &'a str, prefix: &str) -> Option<&'a str> {
-    if raw.len() < prefix.len() {
-        return None;
-    }
-
-    if raw[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&raw[prefix.len()..])
+    Ok(if all {
+        SigmaExpr::All(exprs)
     } else {
-        None
-    }
+        SigmaExpr::Any(exprs)
+    })
 }
 
-fn accumulate_legacy_selector_value(value: &Value, acc: &mut LegacySigmaAccumulator) {
-    match value {
-        Value::Mapping(map) => {
-            for (key, field_value) in map {
-                let Some(field_spec) = key.as_str() else {
-                    continue;
-                };
-                if field_spec.eq_ignore_ascii_case("condition") {
-                    continue;
-                }
-                accumulate_legacy_field_constraint(field_spec, field_value, acc);
-            }
-        }
-        Value::Sequence(items) => {
-            for item in items {
-                accumulate_legacy_selector_value(item, acc);
-            }
-        }
-        _ => {
-            for token in collect_scalar_strings(value) {
-                if let Some(needle) = normalize_contains_needle(&token) {
-                    acc.command_line_contains.insert(needle);
-                }
-            }
-        }
+fn text_expr(field: SigmaField, pattern: &str, mode: &str) -> Result<SigmaExpr> {
+    if pattern.is_empty() {
+        return Err(unsupported("unsupported_value", "empty needle"));
     }
-}
-
-fn accumulate_legacy_field_constraint(
-    field_spec: &str,
-    value: &Value,
-    acc: &mut LegacySigmaAccumulator,
-) {
-    let mut parts = field_spec.split('|');
-    let base = parts.next().unwrap_or("").trim().to_ascii_lowercase();
-
-    if base.is_empty() {
-        return;
-    }
-
-    let values = collect_scalar_strings(value);
-    if values.is_empty() {
-        return;
-    }
-
-    if is_destination_port_field(&base) {
-        for token in values {
-            if let Ok(port) = token.trim().parse::<u16>() {
-                acc.dst_port_any_of.insert(port);
-            }
-        }
-        return;
-    }
-
-    if is_process_field(&base) {
-        for token in values {
-            if let Some(name) = normalize_process_name(&token) {
-                acc.process_any_of.insert(name);
-            }
-        }
-        return;
-    }
-
-    if is_parent_process_field(&base) {
-        for token in values {
-            if let Some(name) = normalize_process_name(&token) {
-                acc.parent_any_of.insert(name);
-            }
-        }
-        return;
-    }
-
-    if is_file_field(&base) {
-        for token in values {
-            if let Some(path) = normalize_path_needle(&token) {
-                acc.file_path_contains.insert(path);
-            }
-        }
-        return;
-    }
-
-    if is_command_line_field(&base) {
-        for token in values {
-            if let Some(needle) = normalize_contains_needle(&token) {
-                acc.command_line_contains.insert(needle);
-            }
-        }
-    }
-}
-
-fn is_destination_port_field(base: &str) -> bool {
-    matches!(base, "destinationport" | "dst_port" | "dport")
-}
-
-fn is_process_field(base: &str) -> bool {
-    matches!(
-        base,
-        "image" | "exe" | "processname" | "process_name" | "process.executable"
-    )
-}
-
-fn is_parent_process_field(base: &str) -> bool {
-    matches!(
-        base,
-        "parentimage" | "parentprocessname" | "parent_process_name" | "parent.process.name"
-    )
-}
-
-fn is_file_field(base: &str) -> bool {
-    matches!(
-        base,
-        "targetfilename" | "filename" | "filepath" | "path" | "name" | "currentdirectory"
-    )
-}
-
-fn is_command_line_field(base: &str) -> bool {
-    if matches!(
-        base,
-        "commandline"
-            | "parentcommandline"
-            | "cmd"
-            | "commands"
-            | "execve"
-            | "comm"
-            | "query"
-            | "c-uri"
-            | "cs-uri"
-            | "cs-uri-query"
-            | "cs-uri-stem"
-            | "cs-host"
-            | "c-useragent"
-            | "cs-user-agent"
-            | "signature"
-    ) {
-        return true;
-    }
-
-    if let Some(rest) = base.strip_prefix('a') {
-        return !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit());
-    }
-
-    false
-}
-
-fn normalize_process_name(raw: &str) -> Option<String> {
-    let trimmed = raw
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim_matches('*');
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let basename = trimmed
-        .rsplit_once('/')
-        .map(|(_, tail)| tail)
-        .or_else(|| trimmed.rsplit_once('\\').map(|(_, tail)| tail))
-        .unwrap_or(trimmed)
-        .trim();
-
-    if basename.is_empty() {
-        None
+    let pattern = if mode == "re" {
+        pattern.to_string()
     } else {
-        Some(basename.to_ascii_lowercase())
-    }
+        let mut out = String::new();
+        if mode != "contains" && mode != "endswith" {
+            out.push('^');
+        }
+        for ch in pattern.chars() {
+            match ch {
+                '*' => out.push_str(".*"),
+                '?' => out.push('.'),
+                _ => out.push_str(&regex::escape(&ch.to_string())),
+            }
+        }
+        if mode != "contains" && mode != "startswith" {
+            out.push('$');
+        }
+        out
+    };
+    let regex = RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .dot_matches_new_line(true)
+        .size_limit(1024 * 1024)
+        .dfa_size_limit(1024 * 1024)
+        .build()
+        .map_err(|err| unsupported("invalid_regex", err.to_string()))?;
+    Ok(SigmaExpr::Text(field, regex))
 }
 
-fn normalize_path_needle(raw: &str) -> Option<String> {
-    let trimmed = raw
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim_matches('*');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_ascii_lowercase())
-    }
-}
-
-fn normalize_contains_needle(raw: &str) -> Option<String> {
-    let trimmed = raw
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim_matches('*');
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let normalized = trimmed
-        .replace("\\\\", "\\")
-        .replace("^", "")
-        .replace("$", "")
-        .trim()
-        .to_ascii_lowercase();
-
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-fn collect_scalar_strings(value: &Value) -> Vec<String> {
+fn sequence_expr(stage: &SigmaStage) -> Result<SigmaExpr> {
     let mut out = Vec::new();
-    collect_scalar_strings_into(value, &mut out);
-    out
+    for group in &stage.command_line_all_groups {
+        if group.is_empty() {
+            return Err(unsupported("unsupported_value", "empty all group"));
+        }
+        out.push(SigmaExpr::Any(
+            group
+                .iter()
+                .map(|s| text_expr(SigmaField::CommandLine, s, "contains"))
+                .collect::<Result<_>>()?,
+        ));
+    }
+    for (field, values, mode) in [
+        (
+            SigmaField::CommandLine,
+            &stage.command_line_not_contains,
+            "contains",
+        ),
+        (SigmaField::Process, &stage.process_not_any_of, "exact"),
+        (SigmaField::Parent, &stage.parent_not_any_of, "exact"),
+        (
+            SigmaField::FilePath,
+            &stage.file_path_not_contains,
+            "contains",
+        ),
+    ] {
+        for value in values {
+            out.push(SigmaExpr::Not(Box::new(text_expr(field, value, mode)?)));
+        }
+    }
+    Ok(SigmaExpr::All(out))
 }
 
-fn collect_scalar_strings_into(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::Null => {}
-        Value::Bool(v) => out.push(v.to_string()),
-        Value::Number(v) => out.push(v.to_string()),
-        Value::String(v) => out.push(v.clone()),
-        Value::Sequence(values) => {
-            for item in values {
-                collect_scalar_strings_into(item, out);
+fn tokenize(condition: &str) -> Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    for c in condition.chars() {
+        if c.is_whitespace() || c == '(' || c == ')' {
+            if !word.is_empty() {
+                tokens.push(std::mem::take(&mut word));
             }
-        }
-        Value::Mapping(map) => {
-            for nested in map.values() {
-                collect_scalar_strings_into(nested, out);
+            if c == '(' || c == ')' {
+                tokens.push(c.to_string());
             }
+        } else {
+            word.push(c);
         }
-        _ => {}
+    }
+    if !word.is_empty() {
+        tokens.push(word);
+    }
+    if tokens.is_empty() || tokens.len() > 256 {
+        return Err(unsupported("resource_limit", "condition token count"));
+    }
+    Ok(tokens)
+}
+
+struct ConditionParser<'a> {
+    tokens: &'a [String],
+    pos: usize,
+    selections: &'a HashMap<String, SigmaExpr>,
+    depth: usize,
+    nodes: usize,
+}
+impl ConditionParser<'_> {
+    fn peek(&self) -> &str {
+        self.tokens.get(self.pos).map(String::as_str).unwrap_or("")
+    }
+    fn or(&mut self) -> Result<SigmaExpr> {
+        let mut out = vec![self.and()?];
+        while self.peek() == "or" {
+            self.pos += 1;
+            out.push(self.and()?);
+        }
+        Ok(SigmaExpr::Any(out))
+    }
+    fn and(&mut self) -> Result<SigmaExpr> {
+        let mut out = vec![self.primary()?];
+        while self.peek() == "and" {
+            self.pos += 1;
+            out.push(self.primary()?);
+        }
+        Ok(SigmaExpr::All(out))
+    }
+    fn primary(&mut self) -> Result<SigmaExpr> {
+        self.depth += 1;
+        self.nodes += 1;
+        if self.depth > 32 || self.nodes > 256 {
+            return Err(unsupported("resource_limit", "condition complexity"));
+        }
+        let token = self.peek().to_string();
+        self.pos += 1;
+        let out = match token.as_str() {
+            "not" => SigmaExpr::Not(Box::new(self.primary()?)),
+            "(" => {
+                let expr = self.or()?;
+                if self.peek() != ")" {
+                    return Err(unsupported("unsupported_condition", "missing )"));
+                }
+                self.pos += 1;
+                expr
+            }
+            "1" | "all" => {
+                if self.peek() != "of" {
+                    return Err(unsupported("unsupported_condition", "missing of"));
+                }
+                self.pos += 1;
+                let pattern = self.peek().to_string();
+                self.pos += 1;
+                let mut found: Vec<_> = self
+                    .selections
+                    .iter()
+                    .filter(|(name, _)| {
+                        pattern == "them"
+                            || if let Some(prefix) = pattern.strip_suffix('*') {
+                                !prefix.contains('*') && name.starts_with(prefix)
+                            } else {
+                                name.as_str() == pattern
+                            }
+                    })
+                    .collect();
+                found.sort_by_key(|(name, _)| *name);
+                if found.is_empty() {
+                    return Err(unsupported(
+                        "unsupported_condition",
+                        "no matching selectors",
+                    ));
+                }
+                let exprs = found.into_iter().map(|(_, expr)| expr.clone()).collect();
+                if token == "all" {
+                    SigmaExpr::All(exprs)
+                } else {
+                    SigmaExpr::Any(exprs)
+                }
+            }
+            _ => self
+                .selections
+                .get(&token)
+                .cloned()
+                .ok_or_else(|| unsupported("unsupported_condition", token))?,
+        };
+        self.depth -= 1;
+        Ok(out)
     }
 }
 
@@ -712,27 +737,11 @@ fn into_set(values: Vec<String>) -> Option<HashSet<String>> {
     Some(values.into_iter().collect())
 }
 
-fn some_set(values: HashSet<String>) -> Option<HashSet<String>> {
-    if values.is_empty() {
-        None
-    } else {
-        Some(values)
-    }
-}
-
 fn into_u16_set(values: Vec<u16>) -> Option<HashSet<u16>> {
     if values.is_empty() {
         return None;
     }
     Some(values.into_iter().collect())
-}
-
-fn some_u16_set(values: HashSet<u16>) -> Option<HashSet<u16>> {
-    if values.is_empty() {
-        None
-    } else {
-        Some(values)
-    }
 }
 
 fn mapping_get<'a>(map: &'a Mapping, key: &str) -> Option<&'a Value> {
@@ -746,7 +755,7 @@ where
     D: Deserializer<'de>,
 {
     let value = Value::deserialize(deserializer)?;
-    Ok(string_vec_from_value(&value))
+    string_vec_from_value(&value).map_err(serde::de::Error::custom)
 }
 
 fn deserialize_u16_vec_lenient<'de, D>(deserializer: D) -> std::result::Result<Vec<u16>, D::Error>
@@ -755,23 +764,36 @@ where
 {
     let value = Value::deserialize(deserializer)?;
     let mut out = Vec::new();
-    for token in string_vec_from_value(&value) {
-        if let Ok(port) = token.trim().parse::<u16>() {
-            out.push(port);
-        }
+    for token in string_vec_from_value(&value).map_err(serde::de::Error::custom)? {
+        out.push(
+            token
+                .trim()
+                .parse::<u16>()
+                .map_err(serde::de::Error::custom)?,
+        );
     }
     Ok(out)
 }
 
-fn string_vec_from_value(value: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    collect_scalar_strings_into(value, &mut out);
-
-    out.into_iter()
-        .map(|item| item.trim().trim_matches(',').trim().to_string())
-        .filter(|item| {
-            let lower = item.to_ascii_lowercase();
-            !item.is_empty() && lower != "none" && lower != "null"
+fn string_vec_from_value(value: &Value) -> std::result::Result<Vec<String>, String> {
+    let values = match value {
+        Value::String(_) | Value::Number(_) => vec![value.clone()],
+        Value::Sequence(items) if !items.is_empty() => items.clone(),
+        _ => return Err("constraint must contain nonempty scalar values".into()),
+    };
+    values
+        .into_iter()
+        .map(|item| {
+            let text = match item {
+                Value::String(s) => s.strip_suffix(',').unwrap_or(&s).to_string(),
+                Value::Number(n) => n.to_string(),
+                _ => return Err("constraint must contain scalar values".into()),
+            };
+            if text.is_empty() {
+                Err("empty constraint".into())
+            } else {
+                Ok(text)
+            }
         })
         .collect()
 }
