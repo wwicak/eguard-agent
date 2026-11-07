@@ -683,4 +683,13 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn agent_stop_is_medium_alert_only_with_subtechnique() {
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        let event = event("systemctl", Some("systemctl stop eguard-agent"));
+        let out = engine.process_event(&event);
+        assert_eq!(out.confidence, Confidence::Medium);
+        assert!(!AgentRuntime::has_concrete_response_evidence(&event, &out));
+        assert!(AgentRuntime::mitre_techniques(&event, &out).contains(&"T1562.001".to_string()));
+    }
 }

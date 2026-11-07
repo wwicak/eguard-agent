@@ -613,7 +613,12 @@ fn heartbeat_runtime_status_surfaces_queue_pressure_levels() {
             });
     }
 
+    runtime.metrics.detection_pipe_alert_suppressed_total = 7;
     let hb = runtime.build_heartbeat_runtime_payload("active");
+    assert!(hb
+        .status
+        .last_detection
+        .contains("detection_pipe_alert_suppressed_total=7"));
     assert!(
         hb.status.last_detection.contains("queue_pressure=critical"),
         "expected critical control-plane queue pressure, got: {}",
@@ -971,6 +976,17 @@ async fn observability_snapshot_reports_bounded_response_queue_progress() {
 
 fn corroborated_evaluation(confidence: Confidence, ts: i64, pid: u32) -> TickEvaluation {
     let mut evaluation = tick_evaluation_for_confidence(confidence, ts, pid);
+    // RAFIX shared: policy-window tests now use approved concrete file evidence.
+    evaluation.detection_event.file_path = Some("/tmp/rafix-policy-fixture.bin".into());
+    evaluation.detection_event.process_exe = evaluation.detection_event.file_path.clone();
+    evaluation.detection_event.file_hash = Some("42".repeat(32));
+    evaluation.detection_outcome.signals.z1_exact_ioc = true;
+    evaluation.detection_outcome.layer1.result = detection::Layer1Result::ExactMatch;
+    evaluation
+        .detection_outcome
+        .layer1
+        .exact_matched_fields
+        .push("file_hash".into());
     evaluation
         .detection_outcome
         .temporal_hits
@@ -1227,4 +1243,33 @@ async fn runtime_tick_p99_and_degraded_churn_stay_within_guardrails() {
         "degraded churn too high: {}",
         snapshot.degraded_due_to_send_failures
     );
+}
+
+#[tokio::test]
+async fn rafix_weak_very_high_stream_never_auto_isolates() {
+    let mut cfg = AgentConfig::default();
+    cfg.offline_buffer_backend = "memory".into();
+    cfg.server_addr = "127.0.0.1:1".into();
+    cfg.response.autonomous_response = true;
+    cfg.response.auto_isolation.enabled = true;
+    cfg.response.auto_isolation.min_incidents_in_window = 2;
+    let mut runtime = AgentRuntime::new(cfg).unwrap();
+    runtime.runtime_mode = AgentMode::Active;
+    runtime.baseline_store.status = BaselineStatus::Active;
+    let mut evaluation =
+        tick_evaluation_for_confidence(Confidence::VeryHigh, 1_700_030_000, 42_003);
+    evaluation
+        .detection_outcome
+        .temporal_hits
+        .push("credential_dump_sequence".into());
+    evaluation
+        .detection_outcome
+        .exploit_indicators
+        .push("process_injection".into());
+    assert!(evaluation.detection_event.file_hash.is_none());
+    assert!(evaluation.detection_event.file_path.is_none());
+    runtime.maybe_apply_auto_isolation(1_700_030_000, Some(&evaluation));
+    runtime.maybe_apply_auto_isolation(1_700_030_010, Some(&evaluation));
+    assert!(!runtime.host_control.isolated);
+    assert!(runtime.pending_response_reports.is_empty());
 }

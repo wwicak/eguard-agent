@@ -773,7 +773,7 @@ mod tests {
             process_exe: None,
             file_unlink: false,
             file_write: false,
-            file_hash: None,
+            file_hash: Some("24".repeat(32)),
             dst_port: None,
             dst_ip: None,
             dst_domain: None,
@@ -787,6 +787,13 @@ mod tests {
         let mut detection_outcome = DetectionOutcome::default();
         detection_outcome.confidence = Confidence::VeryHigh;
         detection_outcome.signals = DetectionSignals::default();
+        // RAFIX shared: degraded response plumbing uses approved exact-file evidence.
+        detection_outcome.signals.z1_exact_ioc = true;
+        detection_outcome.layer1.result = detection::Layer1Result::ExactMatch;
+        detection_outcome
+            .layer1
+            .exact_matched_fields
+            .push("file_hash".into());
         detection_outcome.temporal_hits = vec!["credential_dump_sequence".into()];
         detection_outcome.exploit_indicators = vec!["process_injection".into()];
         TickEvaluation {
