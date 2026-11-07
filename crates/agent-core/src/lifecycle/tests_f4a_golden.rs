@@ -102,7 +102,7 @@ fn f4a_legacy_envelope_and_detection_golden() {
         );
         output.push(serde_json::json!({"detection":event,"envelope":envelope}));
     }
-    let actual = serde_json::to_string_pretty(&output).unwrap() + "\n";
+    let actual = super::tests_f4a_golden::canonical_snapshot(output) + "\n";
     let fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/f4a-legacy.json");
     let expected = std::fs::read_to_string(fixture).unwrap();
@@ -393,4 +393,17 @@ fn f4b_binary_layout_enrichment_differential() {
             * 16
     );
     eprintln!("binary layout parity: {count} records");
+}
+
+// Compare JSON values canonically; wire JSON object order has no contract.
+pub(super) fn canonical_snapshot(output: Vec<serde_json::Value>) -> String {
+    let mut value = serde_json::Value::Array(output);
+    for row in value.as_array_mut().unwrap() {
+        let payload = &mut row["envelope"]["payload_json"];
+        let mut parsed: serde_json::Value = serde_json::from_str(payload.as_str().unwrap()).unwrap();
+        parsed.sort_all_objects();
+        *payload = serde_json::to_string(&parsed).unwrap().into();
+    }
+    value.sort_all_objects();
+    serde_json::to_string_pretty(&value).unwrap()
 }

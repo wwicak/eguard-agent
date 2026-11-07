@@ -238,7 +238,7 @@ fn f4c_decoder_enrichment_detection_envelope_golden() {
         );
         output.push(serde_json::json!({"detection":event,"envelope":envelope}));
     }
-    let actual = serde_json::to_string_pretty(&output).unwrap() + "\n";
+    let actual = super::tests_f4a_golden::canonical_snapshot(output) + "\n";
     if let Some(path) = std::env::var_os("EGUARD_F4C_GENERATE_GOLDEN") {
         std::fs::write(path, &actual).unwrap();
     } else {
