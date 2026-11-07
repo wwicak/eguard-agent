@@ -13,6 +13,7 @@ mod files;
 mod literal;
 #[cfg(feature = "yara-x")]
 mod real;
+pub mod worker;
 use cache::FileKey;
 use files::{is_executable, open_regular};
 #[cfg(any(test, not(feature = "yara-x")))]
@@ -49,6 +50,9 @@ pub struct YaraStatus {
     budget_other: std::sync::atomic::AtomicU64,
     scan_errors: std::sync::atomic::AtomicU64,
     compile_errors: std::sync::atomic::AtomicU64,
+    file_reads: std::sync::atomic::AtomicU64,
+    first_hits: std::sync::atomic::AtomicU64,
+    first_misses: std::sync::atomic::AtomicU64,
     incomplete_epoch: std::sync::atomic::AtomicU64,
     incomplete_evictions: std::sync::atomic::AtomicU64,
     pack_hash: Mutex<[u8; 32]>,
@@ -114,6 +118,9 @@ impl YaraStatus {
                 });
         }
     }
+    pub fn file_read_count(&self) -> u64 {
+        self.file_reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
     pub fn scan_error_count(&self) -> u64 {
         self.scan_errors.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -152,7 +159,7 @@ trait FileScanPermit {}
 struct UnbudgetedFileScan;
 impl FileScanPermit for UnbudgetedFileScan {}
 
-trait YaraBackend: Send {
+trait YaraBackend: Send + Sync {
     fn begin_file_scan(&self, _header: &[u8]) -> Option<Box<dyn FileScanPermit>> {
         Some(Box::new(UnbudgetedFileScan))
     }
@@ -175,12 +182,21 @@ trait YaraBackend: Send {
     }
 }
 
+struct CachedVerdict {
+    hits: Vec<YaraHit>,
+    metadata_trusted: bool,
+}
+
 pub struct YaraEngine {
     backend: Box<dyn YaraBackend + Send>,
     max_scan_bytes: usize,
     excluded_path_prefixes: Vec<String>,
-    verdicts: Mutex<HashMap<(FileKey, [u8; 32], [u8; 32]), Vec<YaraHit>>>,
+    verdicts: Mutex<HashMap<(FileKey, [u8; 32], [u8; 32]), CachedVerdict>>,
     status: Arc<YaraStatus>,
+    #[cfg(test)]
+    force_hash_on_hit: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    read_clock: Mutex<Option<std::time::SystemTime>>,
 }
 
 /// Default path prefixes excluded from YARA file scanning.
@@ -225,6 +241,10 @@ impl YaraEngine {
             excluded_path_prefixes: load_excluded_path_prefixes(),
             verdicts: Mutex::new(HashMap::new()),
             status,
+            #[cfg(test)]
+            force_hash_on_hit: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            read_clock: Mutex::new(None),
         }
     }
 
@@ -356,21 +376,67 @@ impl YaraEngine {
             .map_or(cap, |max| cap.min(max as usize))
     }
 
-    pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
+    fn eligible_path<'a>(&self, event: &'a TelemetryEvent) -> Option<&'a str> {
         if event.event_class != EventClass::ProcessExec
             && !(event.event_class == EventClass::FileOpen && event.file_write)
         {
-            return Vec::new();
+            return None;
         }
-        let Some(path) = event.file_path.as_deref() else {
-            return Vec::new();
-        };
+        let path = event.file_path.as_deref()?;
         if self.is_excluded_path(path)
             || (event.event_class == EventClass::ProcessExec && is_excluded_process_exec_path(path))
             || !is_scannable_regular_file(Path::new(path))
         {
-            return Vec::new();
+            return None;
         }
+        Some(path)
+    }
+
+    fn cached_metadata(&self, key: &FileKey) -> Option<Vec<YaraHit>> {
+        #[cfg(test)]
+        if self
+            .force_hash_on_hit
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
+        // Missing/zero ChangeTime must use the full-read SHA path, never weaker metadata reuse.
+        if !key.reliable_change_time() {
+            return None;
+        }
+        let pack = self.backend.pack_hash();
+        self.verdicts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|((cached, _, hash), verdict)| {
+                cached == key && *hash == pack && verdict.metadata_trusted
+            })
+            .map(|(_, verdict)| verdict.hits.clone())
+    }
+
+    pub fn scan_event(&self, event: &TelemetryEvent) -> Vec<YaraHit> {
+        let Some(path) = self.eligible_path(event) else {
+            return Vec::new();
+        };
+        if let Some(key) = FileKey::at_path(path) {
+            if let Some(hits) = self.cached_metadata(&key) {
+                self.status
+                    .first_hits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return hits;
+            }
+        }
+        self.scan_file_event(event, None)
+    }
+
+    fn scan_file_event(&self, event: &TelemetryEvent, expected: Option<&FileKey>) -> Vec<YaraHit> {
+        let Some(path) = self.eligible_path(event) else {
+            return Vec::new();
+        };
+        let read_start = std::time::SystemTime::now();
+        #[cfg(test)]
+        let read_start = self.read_clock.lock().unwrap().unwrap_or(read_start);
         let Ok(mut file) = open_regular(Path::new(path)) else {
             return Vec::new();
         };
@@ -378,6 +444,18 @@ impl YaraEngine {
             return Vec::new();
         };
         let key = FileKey::new(path, &file, &metadata);
+        if expected.is_some_and(|expected| key.as_ref() != Some(expected)) {
+            return Vec::new();
+        }
+        if let Some(hits) = key.as_ref().and_then(|key| self.cached_metadata(key)) {
+            return hits;
+        }
+        self.status
+            .first_misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.status
+            .file_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut header = [0; 4];
         let Ok(count) = file.read(&mut header) else {
             return Vec::new();
@@ -416,13 +494,15 @@ impl YaraEngine {
                 );
                 return Vec::new();
             }
-            if let Some(hits) = self
+            if let Some(verdict) = self
                 .verdicts
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .get(key)
+                .get_mut(key)
             {
-                return hits.clone();
+                // Trust is earned by this read, never merely by an old entry aging in cache.
+                verdict.metadata_trusted = key.0.mature_at(read_start);
+                return verdict.hits.clone();
             }
         }
         let epoch = self
@@ -466,7 +546,7 @@ impl YaraEngine {
                 if cache.len() >= 512
                     || cache
                         .iter()
-                        .map(|(key, hits)| key.0.cache_bytes() + 64 + payload_bytes(hits))
+                        .map(|(key, hits)| key.0.cache_bytes() + 64 + payload_bytes(&hits.hits))
                         .sum::<usize>()
                         .saturating_add(new_bytes)
                         > MAX_CACHED_PAYLOAD_BYTES
@@ -474,7 +554,14 @@ impl YaraEngine {
                     cache.clear();
                 }
                 if new_bytes <= MAX_CACHED_PAYLOAD_BYTES {
-                    cache.insert(key, hits.clone());
+                    let metadata_trusted = key.0.mature_at(read_start);
+                    cache.insert(
+                        key,
+                        CachedVerdict {
+                            hits: hits.clone(),
+                            metadata_trusted,
+                        },
+                    );
                 }
             }
         }

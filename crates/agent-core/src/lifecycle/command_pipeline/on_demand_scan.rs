@@ -57,7 +57,7 @@ impl AgentRuntime {
                 }
             };
 
-            let outcome = match self.detection_state.process_event(&event) {
+            let outcome = match self.detection_state.process_operator_event(&event) {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     scan_errors = scan_errors.saturating_add(1);
@@ -372,5 +372,96 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp_root);
         std::env::remove_var("EGUARD_TEST_QUARANTINE_DIR");
+    }
+    #[tokio::test]
+    async fn operator_yara_only_alerts_and_retains_the_file() {
+        let _guard = crate::test_support::TestEnvGuard::new(&[
+            "EGUARD_TEST_QUARANTINE_DIR",
+            "EGUARD_EBPF_REPLAY_PATH",
+        ]);
+        let root =
+            std::env::temp_dir().join(format!("eguard-yara-operator-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sample");
+        fs::write(&path, b"operator-only-marker").unwrap();
+        fs::write(root.join("replay"), b"").unwrap();
+        std::env::set_var("EGUARD_EBPF_REPLAY_PATH", root.join("replay"));
+        std::env::set_var("EGUARD_TEST_QUARANTINE_DIR", root.join("vault"));
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".into();
+        cfg.server_addr = "127.0.0.1:1".into();
+        let mut runtime = AgentRuntime::new(cfg).unwrap();
+        runtime.client.set_online(false);
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        engine.load_yara_rules_str("rule operator_fixture { meta: score = 75 strings: $a = \"operator-only-marker\" condition: $a at 0 and filesize <= 128 }").unwrap();
+        runtime.detection_state = crate::detection_state::SharedDetectionState::new(engine, None);
+        let event = runtime
+            .build_on_demand_scan_event(&path, 123)
+            .unwrap()
+            .unwrap();
+        let outcome = runtime
+            .detection_state
+            .process_operator_event(&event)
+            .unwrap();
+        assert_eq!(outcome.yara_hits.len(), 1);
+        assert!(!outcome.signals.z1_exact_ioc);
+        runtime
+            .handle_command(
+                grpc_client::CommandEnvelope {
+                    command_id: "yara-only".into(),
+                    command_type: "scan".into(),
+                    payload_json: serde_json::json!({"paths":[path]}).to_string(),
+                },
+                123,
+            )
+            .await;
+        assert!(path.exists());
+        assert!(runtime.pending_response_actions.is_empty());
+        assert!(runtime
+            .pending_response_reports
+            .iter()
+            .all(|report| report.envelope.action_type != "quarantine_file"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn production_eicar_operator_quarantine_is_independently_exact_hash_backed() {
+        let _guard = crate::test_support::TestEnvGuard::new(&["EGUARD_EBPF_REPLAY_PATH"]);
+        let root =
+            std::env::temp_dir().join(format!("eguard-eicar-hash-proof-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("replay"), b"").unwrap();
+        std::env::set_var("EGUARD_EBPF_REPLAY_PATH", root.join("replay"));
+        let path = root.join("eicar.com");
+        fs::write(
+            &path,
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+        )
+        .unwrap();
+        let mut cfg = AgentConfig::default();
+        cfg.offline_buffer_backend = "memory".into();
+        cfg.server_addr = "127.0.0.1:1".into();
+        let runtime = AgentRuntime::new(cfg).unwrap();
+        let event = runtime
+            .build_on_demand_scan_event(&path, 123)
+            .unwrap()
+            .unwrap();
+        let mut outcome = runtime
+            .detection_state
+            .process_operator_event(&event)
+            .unwrap();
+        assert!(outcome.signals.z1_exact_ioc);
+        assert!(outcome
+            .layer1
+            .exact_matched_fields
+            .iter()
+            .any(|field| field == "file_hash"));
+        outcome.yara_hits.clear();
+        outcome.signals.yara_hit = false;
+        assert_eq!(
+            runtime.sanitize_operator_scan_action(PlannedAction::QuarantineOnly, &event, &outcome),
+            PlannedAction::QuarantineOnly
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

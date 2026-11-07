@@ -18,7 +18,7 @@ pub(super) struct TelemetryNoiseFilter {
 }
 
 impl TelemetryNoiseFilter {
-    fn should_send(
+    pub(super) fn should_send(
         &mut self,
         enabled: bool,
         event: &TelemetryEvent,

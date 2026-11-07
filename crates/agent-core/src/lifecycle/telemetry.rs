@@ -9,6 +9,68 @@ use grpc_client::EventEnvelope;
 use super::{confidence_to_severity, AgentRuntime, TickEvaluation};
 
 impl AgentRuntime {
+    pub(super) fn buffer_completed_yara(&mut self, now_unix: i64) -> anyhow::Result<()> {
+        for result in self.detection_state.take_yara_results() {
+            let confidence = result
+                .hits
+                .iter()
+                .map(|hit| hit.severity)
+                .max()
+                .unwrap_or(Confidence::None);
+            let mut outcome = DetectionOutcome {
+                confidence,
+                observation_id: result.observation_id,
+                yara_hits: result.hits,
+                yara_scan_incomplete: result.incomplete,
+                ..Default::default()
+            };
+            outcome.signals.yara_hit = !outcome.yara_hits.is_empty();
+            self.buffer_yara_incomplete(&outcome, now_unix)?;
+            if outcome.yara_hits.is_empty() {
+                continue;
+            }
+            // Async YARA corroborates campaign hashes, never autonomous response or ML/temporal state.
+            if !result.sha256.is_empty() {
+                self.buffer_ioc_signal(
+                    result.sha256.clone(),
+                    "hash".into(),
+                    &format!("{confidence:?}"),
+                    result.event.ts_unix,
+                );
+            }
+            let rule_name = Self::detection_rule_name(&outcome).unwrap_or_default();
+            let severity = confidence_to_severity(confidence);
+            if !self.telemetry_noise.should_send(
+                cfg!(target_os = "linux") && self.config.telemetry_noise_filter,
+                &result.event,
+                &outcome,
+                severity,
+                &rule_name,
+                now_unix,
+            ) {
+                continue;
+            }
+            let hits = outcome.yara_hits.iter().map(|hit| json!({"rule":hit.rule_name,
+                "source":hit.source,"literal":hit.matched_literal,"severity":confidence_to_severity(hit.severity)})).collect::<Vec<_>>();
+            let mut event_json = serde_json::to_value(&result.event)?;
+            event_json["event_class"] = result.event.event_class.as_str().into();
+            event_json["observation_id"] = serde_json::to_value(&outcome.observation_id)?;
+            self.buffer.enqueue(EventEnvelope {
+                agent_id: self.config.agent_id.clone(), event_type: "alert".into(),
+                severity: severity.into(), rule_name: rule_name.clone(), created_at_unix: now_unix,
+                payload_json: json!({"observed_at_unix":now_unix,"event":event_json,
+                    "observation_id":outcome.observation_id,"scan_latency_ms":result.scan_latency_ms,
+                    "active_pack_hash":result.pack_hash,"scanned_sha256":result.sha256,
+                    "alert_only":true,"auto_response":false,
+                    "detection":{"confidence":super::confidence_label(confidence),"rule_type":"yara",
+                        "detection_layers":["YARA"],"yara_hits":hits,"signals":{"yara_hit":true}},
+                    "audit":{"primary_rule_name":rule_name,"rule_type":"yara","detection_layers":["YARA"],"yara_hits":hits}
+                }).to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) fn buffer_yara_incomplete(
         &mut self,
         outcome: &DetectionOutcome,

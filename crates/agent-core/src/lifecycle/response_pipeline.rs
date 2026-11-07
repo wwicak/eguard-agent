@@ -1090,6 +1090,47 @@ mod tests {
         assert!(!AgentRuntime::has_concrete_response_evidence(&e, &o));
     }
 
+    #[test]
+    fn operator_yara_only_never_authorizes_any_action_but_exact_hash_does() {
+        let runtime = runtime();
+        let event = quarantine_event(
+            "/tmp/approved-operator-fixture",
+            false,
+            EventClass::FileOpen,
+        );
+        let mut outcome = DetectionOutcome::default();
+        outcome.confidence = detection::Confidence::Definite;
+        outcome.signals.yara_hit = true;
+        outcome.yara_hits.push(detection::YaraHit {
+            rule_name: "operator-fixture".into(),
+            source: event.file_path.clone().unwrap(),
+            matched_literal: "fixture".into(),
+            severity: detection::Confidence::High,
+        });
+        for action in [
+            super::super::PlannedAction::KillOnly,
+            super::super::PlannedAction::QuarantineOnly,
+            super::super::PlannedAction::KillAndQuarantine,
+            super::super::PlannedAction::CaptureScript,
+        ] {
+            assert_eq!(
+                runtime.sanitize_operator_scan_action(action, &event, &outcome),
+                super::super::PlannedAction::AlertOnly
+            );
+        }
+        outcome.signals.z1_exact_ioc = true;
+        outcome.layer1.result = detection::Layer1Result::ExactMatch;
+        outcome.layer1.exact_matched_fields.push("file_hash".into());
+        assert_eq!(
+            runtime.sanitize_operator_scan_action(
+                super::super::PlannedAction::QuarantineOnly,
+                &event,
+                &outcome
+            ),
+            super::super::PlannedAction::QuarantineOnly
+        );
+    }
+
     fn quarantine_event(path: &str, file_write: bool, event_class: EventClass) -> TelemetryEvent {
         TelemetryEvent {
             ts_unix: 1_700_000_000,

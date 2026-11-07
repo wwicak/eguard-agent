@@ -9,6 +9,7 @@ use tracing::{info, warn};
 enum ShardCommand {
     ProcessEvent {
         event: Box<TelemetryEvent>,
+        operator_scan: bool,
         response: mpsc::Sender<std::result::Result<DetectionOutcome, String>>,
     },
     ScanProcessMemory {
@@ -47,25 +48,34 @@ struct DetectionShard {
 }
 
 impl DetectionShard {
-    fn spawn(shard_idx: usize, initial_engine: DetectionEngine) -> Self {
+    fn spawn(
+        shard_idx: usize,
+        initial_engine: DetectionEngine,
+        yara_worker: detection::YaraWorker,
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let yara_status = Arc::new(ArcSwap::from(initial_engine.yara.status_handle()));
         let worker_status = Arc::clone(&yara_status);
         let thread_name = format!("eguard-detection-shard-{shard_idx}");
         std::thread::Builder::new()
             .name(thread_name)
-            .spawn(move || shard_worker_loop(initial_engine, rx, worker_status))
+            .spawn(move || shard_worker_loop(initial_engine, rx, worker_status, yara_worker))
             .unwrap_or_else(|err| {
                 panic!("failed spawning detection shard worker {shard_idx}: {err}")
             });
         Self { tx, yara_status }
     }
 
-    fn process_event(&self, event: TelemetryEvent) -> Result<DetectionOutcome> {
+    fn process_event(
+        &self,
+        event: TelemetryEvent,
+        operator_scan: bool,
+    ) -> Result<DetectionOutcome> {
         let (response_tx, response_rx) = mpsc::channel();
         self.tx
             .send(ShardCommand::ProcessEvent {
                 event: Box::new(event),
+                operator_scan,
                 response: response_tx,
             })
             .map_err(|_| anyhow!("detection shard channel closed"))?;
@@ -177,11 +187,33 @@ fn shard_worker_loop(
     mut engine: DetectionEngine,
     rx: mpsc::Receiver<ShardCommand>,
     yara_status: Arc<ArcSwap<detection::YaraStatus>>,
+    yara_worker: detection::YaraWorker,
 ) {
+    let mut pack = Arc::new(std::mem::take(&mut engine.yara));
+    let mut active = Arc::new(std::sync::atomic::AtomicBool::new(true));
     while let Ok(command) = rx.recv() {
         match command {
-            ShardCommand::ProcessEvent { event, response } => {
-                let outcome = engine.process_event(&event);
+            ShardCommand::ProcessEvent {
+                event,
+                operator_scan,
+                response,
+            } => {
+                let (hits, incomplete) = if operator_scan {
+                    let mut scan = (*event).clone();
+                    scan.file_write = true;
+                    (pack.scan_event(&scan), pack.take_incomplete())
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let outcome = engine.process_event_with_yara(&event, hits, incomplete);
+                if !operator_scan {
+                    yara_worker.submit(
+                        pack.clone(),
+                        active.clone(),
+                        &event,
+                        outcome.observation_id.clone(),
+                    );
+                }
                 let _ = response.send(Ok(outcome));
             }
             ShardCommand::ScanProcessMemory {
@@ -189,8 +221,7 @@ fn shard_worker_loop(
                 mode,
                 response,
             } => {
-                let result =
-                    detection::memory_scanner::scan_process_memory(&engine.yara, pid, mode);
+                let result = detection::memory_scanner::scan_process_memory(&pack, pid, mode);
                 let _ = response.send(Ok(result));
             }
             ShardCommand::ApplyEmergencyRule {
@@ -217,7 +248,10 @@ fn shard_worker_loop(
                 replacement.layer3.inherit_baselines(&mut engine.layer3);
                 // Swap the engine in immediately so subsequent ProcessEvent
                 // commands run against the new rules.
-                yara_status.store(replacement.yara.status_handle());
+                active.store(false, std::sync::atomic::Ordering::Release);
+                active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+                pack = Arc::new(std::mem::take(&mut replacement.yara));
+                yara_status.store(pack.status_handle());
                 let old_engine = std::mem::replace(&mut engine, *replacement);
                 // Respond before dropping the old engine.  Detection engines
                 // carry millions of YARA/Sigma/IOC structures and the Drop
@@ -250,6 +284,7 @@ fn shard_worker_loop(
             }
         }
     }
+    active.store(false, std::sync::atomic::Ordering::Release);
 }
 
 fn apply_emergency_rule_to_engine(
@@ -276,8 +311,15 @@ fn apply_emergency_rule_to_engine(
 }
 
 struct DetectionStateInner {
+    yara_worker: detection::YaraWorker,
     shards: Vec<DetectionShard>,
     version: ArcSwap<Option<String>>,
+}
+
+impl Drop for DetectionStateInner {
+    fn drop(&mut self) {
+        self.yara_worker.shutdown();
+    }
 }
 
 #[derive(Clone)]
@@ -316,32 +358,55 @@ impl SharedDetectionState {
         F: FnMut() -> DetectionEngine,
     {
         let shard_count = shard_count.max(1);
+        let yara_worker = detection::YaraWorker::new();
         let mut shards = Vec::with_capacity(shard_count);
-        shards.push(DetectionShard::spawn(0, engine));
+        shards.push(DetectionShard::spawn(0, engine, yara_worker.clone()));
         for idx in 1..shard_count {
-            shards.push(DetectionShard::spawn(idx, shard_engine_builder()));
+            shards.push(DetectionShard::spawn(
+                idx,
+                shard_engine_builder(),
+                yara_worker.clone(),
+            ));
         }
 
         Self {
             inner: Arc::new(DetectionStateInner {
                 shards,
+                yara_worker,
                 version: ArcSwap::new(Arc::new(version)),
             }),
         }
     }
 
     pub fn yara_health(&self) -> String {
-        self.inner
-            .shards
-            .iter()
-            .map(|shard| shard.yara_status.load().health())
-            .collect::<Vec<_>>()
-            .join(";")
+        format!(
+            "{} {}",
+            self.inner.yara_worker.health(),
+            self.inner
+                .shards
+                .iter()
+                .map(|shard| shard.yara_status.load().health())
+                .collect::<Vec<_>>()
+                .join(";")
+        )
     }
 
     pub fn process_event(&self, event: &TelemetryEvent) -> Result<DetectionOutcome> {
         let idx = self.shard_index_for_event(event);
-        self.inner.shards[idx].process_event(event.clone())
+        self.inner.shards[idx].process_event(event.clone(), false)
+    }
+
+    pub fn process_operator_event(&self, event: &TelemetryEvent) -> Result<DetectionOutcome> {
+        self.inner.shards[self.shard_index_for_event(event)].process_event(event.clone(), true)
+    }
+
+    pub fn take_yara_results(&self) -> Vec<detection::YaraScanResult> {
+        self.inner.yara_worker.take_results()
+    }
+
+    #[cfg(test)]
+    pub fn drain_yara_for_tests(&self) {
+        self.inner.yara_worker.drain_for_tests();
     }
 
     pub fn scan_process_memory(

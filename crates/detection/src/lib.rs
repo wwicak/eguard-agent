@@ -75,6 +75,7 @@ pub use usb_control::{
     parse_usb_class, UsbAction, UsbDeviceClass, UsbEvent, UsbPolicy, UsbViolation,
 };
 pub use vulnerability::{CveDatabase, CveRecord, VulnerabilityMatch};
+pub use yara_engine::worker::{YaraScanResult, YaraWorker};
 pub use yara_engine::{YaraEngine, YaraError, YaraHit, YaraIncomplete, YaraStatus};
 pub use zero_trust::{
     compute_score as compute_device_score, default_factors as default_health_factors,

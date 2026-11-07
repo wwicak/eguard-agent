@@ -284,12 +284,21 @@ impl DetectionEngine {
     }
 
     pub fn process_event(&mut self, event: &TelemetryEvent) -> DetectionOutcome {
+        let hits = self.yara.scan_event(event);
+        let incomplete = self.yara.take_incomplete();
+        self.process_event_with_yara(event, hits, incomplete)
+    }
+
+    /// Passive runtime scans arrive later and must not feed autonomous fusion/response.
+    pub fn process_event_with_yara(
+        &mut self,
+        event: &TelemetryEvent,
+        yara_hits: Vec<YaraHit>,
+        yara_scan_incomplete: Vec<crate::YaraIncomplete>,
+    ) -> DetectionOutcome {
         let allowed = self.allowlist.is_allowed(event);
         let layer1 = self.layer1.check_event(event);
         // RAFIX shared: unsupported fallback rules are rejected at load, not by name.
-        let yara_hits = self.yara.scan_event(event);
-        let yara_scan_incomplete = self.yara.take_incomplete();
-
         // ── Layer 2: Temporal pattern correlation ───────────────
         self.pipe_alerts.observe(event);
         let mut temporal_hits = self.layer2.observe(event);
@@ -420,9 +429,14 @@ impl DetectionEngine {
         // Preserve RAFIX grades; YARA confidence comes from the compiled rule score.
         let mut policy_signals = signals.clone();
         policy_signals.yara_hit = yara_hits.iter().any(|hit| hit.severity >= Confidence::High);
-        let yara_confidence = yara_hits.iter().map(|hit| hit.severity).max().unwrap_or(Confidence::None);
+        let yara_confidence = yara_hits
+            .iter()
+            .map(|hit| hit.severity)
+            .max()
+            .unwrap_or(Confidence::None);
         // RAFIX shared: narrowed context subclasses are named MEDIUM, not standalone HIGH.
-        let base_confidence = confidence_policy(&policy_signals).max(yara_confidence)
+        let base_confidence = confidence_policy(&policy_signals)
+            .max(yara_confidence)
             .max(
                 if exploit_indicators
                     .iter()

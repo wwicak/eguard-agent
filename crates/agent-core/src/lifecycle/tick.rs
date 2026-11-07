@@ -101,6 +101,7 @@ impl AgentRuntime {
         // Check if a background bundle reload has completed and apply
         // the engine swap.  This is a non-blocking poll.
         self.poll_background_reload();
+        self.buffer_completed_yara(now_unix)?;
 
         self.run_self_protection_if_due(now_unix).await?;
         self.enforce_config_permissions_if_due(now_unix);

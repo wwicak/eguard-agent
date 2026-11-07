@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod bench_eval_throughput;
+#[cfg(all(test, feature = "yara-x"))]
+mod yara_async_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod yara_runtime_bench;
 #[cfg(all(test, feature = "yara-x"))]

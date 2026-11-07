@@ -94,6 +94,8 @@ fn same_size_same_mtime_rewrite_is_rescanned_and_detected() {
 #[cfg(unix)]
 fn sha_is_required_even_when_all_filekey_metadata_collides() {
     let (engine, calls, _directory, event) = fixture();
+    // Simulate unavailable/zero Windows ChangeTime at the same reuse-decision branch.
+    engine.force_hash_on_hit.store(true, Ordering::Relaxed);
     assert!(engine.scan_event(&event).is_empty());
     rewrite_and_restore_mtime(&event);
     // Unix ctime cannot be restored by utimensat. Model a metadata collision explicitly:
@@ -110,11 +112,15 @@ fn sha_is_required_even_when_all_filekey_metadata_collides() {
 }
 #[test]
 #[ignore = "explicit cache-hit path RSS/performance qualification"]
-fn cached_4mib_read_hash_path_p99() {
-    let (engine, calls, _directory, event) = fixture();
-    let mut bytes = vec![0; 4 * 1024 * 1024];
-    bytes[..4].copy_from_slice(b"\x7fELF");
-    fs::write(event.file_path.as_ref().unwrap(), bytes).unwrap();
+fn cached_4mib_metadata_path_p99() {
+    let (engine, calls, _directory, mut event) = fixture();
+    event.file_path =
+        Some(std::env::var("EGUARD_YARA_CACHE_PERF_PATH").expect(
+            "precreate a 4MiB executable-magic fixture at least 2s before this measurement",
+        ));
+    let key = FileKey::at_path(event.file_path.as_ref().unwrap()).unwrap();
+    assert!(key.mature_at(std::time::SystemTime::now()));
+    assert_eq!(key.size, 4 * 1024 * 1024);
     engine.scan_event(&event);
     let mut elapsed = Vec::new();
     for _ in 0..100 {
@@ -127,9 +133,72 @@ fn cached_4mib_read_hash_path_p99() {
         1,
         "every measured call must be a cache hit"
     );
+    assert_eq!(
+        engine.status.file_read_count(),
+        1,
+        "measured mature cache hits must never read"
+    );
     elapsed.sort();
     println!(
         "YARA_CACHE_HIT {}",
         serde_json::json!({"samples":100,"file_mib":4,"p50_us":elapsed[50],"p99_us":elapsed[98],"backend_calls_total":1,"loadavg":fs::read_to_string("/proc/loadavg").ok()})
     );
+}
+
+#[test]
+fn unchanged_exec_never_reads_or_hashes_on_hit() {
+    let (engine, calls, _directory, event) = fixture();
+    *engine.read_clock.lock().unwrap() =
+        Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3));
+    engine.scan_event(&event);
+    let reads = engine.status.file_read_count();
+    for _ in 0..10 {
+        engine.scan_event(&event);
+    }
+    assert_eq!(engine.status.file_read_count(), reads);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+#[test]
+fn metadata_hit_requires_the_active_pack_hash() {
+    let (engine, _, _directory, event) = fixture();
+    *engine.read_clock.lock().unwrap() =
+        Some(std::time::SystemTime::now() + std::time::Duration::from_secs(3));
+    engine.scan_event(&event);
+    let mut cache = engine.verdicts.lock().unwrap();
+    let ((key, digest, _), hits) = cache.drain().next().unwrap();
+    cache.insert((key.clone(), digest, [42; 32]), hits);
+    drop(cache);
+    assert!(
+        engine.cached_metadata(&key).is_none(),
+        "foreign pack verdict must miss"
+    );
+}
+
+#[test]
+fn immature_entry_reads_once_per_lookup_and_never_ages_into_trust() {
+    let (engine, calls, _directory, event) = fixture();
+    for expected in 1..=3 {
+        engine.scan_event(&event);
+        assert_eq!(engine.status.file_read_count(), expected);
+    }
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "SHA reuses the verdict only after reading"
+    );
+    let key = FileKey::at_path(event.file_path.as_ref().unwrap()).unwrap();
+    assert!(engine.cached_metadata(&key).is_none());
+}
+#[test]
+fn future_ctime_and_zero_ctime_are_never_metadata_trusted() {
+    let (_, _, _directory, event) = fixture();
+    let mut key = FileKey::at_path(event.file_path.as_ref().unwrap()).unwrap();
+    let now = std::time::SystemTime::now();
+    key.changed = (
+        (now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 60) as i64,
+        0,
+    );
+    assert!(!key.mature_at(now));
+    key.changed = (0, 0);
+    assert!(!key.mature_at(now));
 }
