@@ -89,7 +89,7 @@ func addAV(p *core.Posture, name string, running, updated core.Tri) {
 	if p.AV.Running != core.Yes {
 		p.AV.Running = running
 	}
-	if running == core.Yes && updated == core.Yes {
-		p.AV.Updated = core.Yes
+	if running == core.Yes && p.AV.Updated != core.Yes {
+		p.AV.Updated = updated
 	}
 }

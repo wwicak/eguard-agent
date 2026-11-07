@@ -1,120 +1,173 @@
-# Linux dan macOS — fondasi port, BELUM siap deployment
+# Linux dan macOS — kandidat port NAC, belum production-ready
 
-Slice ini **belum menyelesaikan port**. Jangan distribusikan paket untuk produksi.
-Tidak ada service yang dipasang/dijalankan pada shared work host. Cross-build
-bukan validasi runtime Linux/macOS. Pipeline release belum dibuat karena collector,
-cleanup launchd, dan acceptance paket belum lengkap.
+Tidak ada instalasi/service dijalankan pada shared work host. Cross-build dan
+fixture bukan validasi runtime. Acceptance enrollment, expiry, uninstall,
+upgrade, systemd hardening, launchd serta signing nyata wajib pada VM disposable
+berizin sebelum deployment. Windows tetap memakai alur installer stamped lama.
 
-## Kontrak identitas dan enrollment
+## Instalasi dan enrollment (hanya VM berizin)
 
-Paket Unix netral tidak membawa URL, CA, atau pin bootstrap tertanam. Operator
-harus memperoleh fingerprint dari kanal admin server yang terautentikasi,
-bukan dari koneksi identity yang akan dipercaya.
-
-Perintah target (hanya pada VM disposable yang berizin):
+Linux Debian/Ubuntu:
 
 ```sh
+sudo dpkg -i eguard-nac-agent_1.2.3_amd64.deb
+# arm64: eguard-nac-agent_1.2.3_arm64.deb
 sudo eguard-nac enroll --server gateway.example:8443 --fingerprint <64-hex-lowercase> <CODE>
 eguard-nac status
-sudo eguard-nac uninstall
-sudo eguard-nac uninstall --token <TOKEN>
-sudo eguard-nac uninstall --authorization /path/authorization.json
 ```
 
-`GET https://HOST:PORT/v1/nac/identity` adalah **satu-satunya** request yang
-menonaktifkan verifikasi TLS. Request ini tidak membawa kode, CSR, cookie,
-proxy atau redirect. Respons v1 memuat `ca_der_b64` dan `bootstrap_pin`.
-Fingerprint = lowercase hex SHA256 atas gabungan byte:
+RHEL/Rocky/Fedora:
+
+```sh
+sudo rpm -i eguard-nac-agent-1.2.3-1.x86_64.rpm
+# arm64: eguard-nac-agent-1.2.3-1.aarch64.rpm
+sudo eguard-nac enroll --server gateway.example:8443 --fingerprint <64-hex-lowercase> <CODE>
+```
+
+macOS:
+
+```sh
+sudo installer -pkg eGuard-NAC-1.2.3.pkg -target /
+sudo eguard-nac enroll --server gateway.example:8443 --fingerprint <64-hex-lowercase> <CODE>
+eguard-nac status
+```
+
+Paket tidak start daemon: Linux hanya daemon-reload + enable; macOS memasang
+symlink CLI tanpa load. Enrollment terverifikasi baru memanggil systemctl
+start atau `launchctl bootstrap system /Library/LaunchDaemons/id.eguard.nac.plist`.
+Status tidak mencetak secret dan bukan bukti service sehat/akses diizinkan.
+Existing root tidak ditimpa. Enrollment gagal menghapus root transaksi sendiri.
+Upgrade enrolled in-place belum didukung; uninstall dahulu.
+
+## Trust fingerprint
+
+Paket netral tidak membawa URL/CA/pin compiled-in. Dapatkan fingerprint lewat
+kanal admin server terautentikasi, bukan endpoint identity yang belum dipercaya.
+`GET https://HOST:PORT/v1/nac/identity` adalah satu-satunya request dengan verifikasi
+TLS dinonaktifkan, tanpa code/CSR/proxy/redirect. Respons v1 memuat `ca_der_b64`
+dan `bootstrap_pin`. Fingerprint lowercase SHA256:
 
 ```
 eguard-nac-identity/v1\x00 || CA_DER || raw_ed25519_public_key_32_bytes
 ```
 
-Mismatch menghentikan proses sebelum redeem kode. Setelah cocok, POST
-`/v1/nac/enroll` memakai CA itu dengan verifikasi hostname/SAN normal dan
-mengirim `code`, `csr_pem`, `hostname`, serta `platform=linux|darwin`.
-Windows tetap menggunakan konfigurasi compiled-in dan menghilangkan platform.
+Mismatch menolak sebelum code dikirim. Selanjutnya CA dipin, hostname/SAN normal,
+POST `/v1/nac/enroll` membawa platform linux/darwin. Windows menghilangkan platform.
+`enrollment-identity.json` menyimpan server/CA/pin/fingerprint; startup menghitung
+ulang fingerprint dan memverifikasi signed bootstrap menunjuk CA/origin yang sama.
+Root dapat mengganti seluruh trust sekaligus; bukan proteksi terhadap root/offline.
 
-`enrollment-identity.json` menyimpan server, CA, pin, dan fingerprint bersama.
-Service membaca ulang dan menghitung fingerprint pada setiap startup. Bootstrap
-bertanda tangan juga wajib menunjuk origin dan CA yang sama, sehingga server
-tidak dapat diam-diam mengganti trust runtime lewat respons enroll. Pin tersebut
-dipakai admission/bootstrap.Verify dan service factory. Mengganti pin/CA saja
-terdeteksi, tetapi **root dapat mengganti CA, pin dan fingerprint sekaligus**.
-Tidak ada janji keamanan terhadap root/admin atau akses disk offline.
+## Lokasi dan keamanan
 
-## Lokasi dan kredensial
-
-| OS | Root provisioning/journal | Binary / CLI target |
+| OS | Root 0700 (journal.db, key, config) | Binary dan CLI |
 |---|---|---|
-| Linux | `/var/lib/eguard-nac` / `journal.db` | `/usr/lib/eguard-nac/eguard-nac-service`, symlink `/usr/bin/eguard-nac` |
-| macOS | `/Library/Application Support/eGuard NAC` / `journal.db` | `/Library/eGuard NAC/eguard-nac-service`, symlink `/usr/local/bin/eguard-nac` |
+| Linux | `/var/lib/eguard-nac` | `/usr/lib/eguard-nac/eguard-nac-service`, `/usr/bin/eguard-nac` |
+| macOS | `/Library/Application Support/eGuard NAC` | `/Library/eGuard NAC/eguard-nac-service`, `/usr/local/bin/eguard-nac` |
 
-Root baru 0700, file 0600, key ECDSA P-256 PEM di root. Key ini
-**file-protected, bukan hardware-bound**. TPM2 Linux dan Keychain/Secure Enclave
-macOS adalah pekerjaan lanjutan, bukan implementasi saat ini. Pemeriksaan path
-Unix belum handle-pinned terhadap TOCTOU/ancestor symlink; jangan mengklaim
-ketahanan root/offline atau rollback disk.
+Key ECDSA P-256 PEM 0600 **file-protected, bukan hardware-bound**. TPM2 serta
+Keychain/Secure Enclave belum tersedia. Path/permission checks belum handle-pinned
+terhadap ancestor symlink/TOCTOU. Root/offline disk dapat mengubah state dan jam.
+Service memakai child self executable fixed verbs dengan stdin gate, process-group
+boundary dan deadline; command provider fixed argv, timeout 5 detik, output terbatas.
+Unknown/error tidak berubah menjadi bukti compliant; cancel tidak memperpanjang TTL.
 
-Enrollment memakai mkdir eksklusif sebagai bukti ownership transaksi; existing
-root tidak ditimpa. Kegagalan menghapus root yang dibuat transaksi. Start service
-hanya dilakukan setelah admission signed bootstrap + activation. Penolakan
-provisioning tidak memulai collection/transport. Runtime memakai fixed child verb
-dan process-group boundary, tanpa shell atau executable yang ditentukan server.
+## Evidence per OS
 
-## Build dan instalasi
+| Field | Linux | macOS |
+|---|---|---|
+| Host/OS | hostname, os-release | scutil ComputerName, sw_vers |
+| Adapter | net.Interfaces, default IPv4 /proc/net/route | net.Interfaces, route default interface |
+| Domain | sssd domains, krb5 default_realm, realm list | dsconfigad -show |
+| Firewall | nft ruleset, ufw status, firewalld state | socketfilterfw global state |
+| Disk encryption | root dm UUID CRYPT- (field wire bitlocker_os, source luks) | FileVault fdesetup |
+| Secure Boot | efivar SecureBoot byte | Unknown |
+| Reboot | reboot-required, No bila parent dapat dibaca dan marker tidak ada | Unknown |
+| AV | ClamAV unit + signature mtime <7 hari; mdatp health; unit CrowdStrike/SentinelOne/Sophos/ESET/Trellix | XProtect plist versi/mtime <30 hari; Defender health; app bundle CrowdStrike/SentinelOne/Sophos/ESET |
+| Software opt-in | dpkg-query atau rpm query | XML Info.plist /Applications/*.app |
+| User opt-in | loginctl list-sessions, satu user snapshot | belum tersedia |
+
+Inventory hanya bila signed config mengaktifkan; 800 entri, teks 128 byte,
+deduplikasi name/version. Binary plist dilewati. Tidak ada system_profiler berat.
+Domain konfigurasi bukan bukti live join. nft ruleset nonempty bukan audit kebijakan
+packet filtering. Tidak ada route IPv6 Linux. LUKS berlapis/LVM dapat Unknown.
+Tidak ada fallback mokutil/needs-restarting/iptables. Tidak semua distro/product
+unit/path didukung. Third-party presence bukan bukti running/updated. Status unit
+command error tetap Unknown (termasuk exit nonzero inactive). XProtect mtime bukan
+jaminan signature vendor terbaru dan running tetap Unknown. App launchd-only belum
+dideteksi. Gatekeeper dikirim sebagai evidence tambahan, bukan firewall jaringan.
+
+Produk NAC-only posture/inventory/status: tidak ada EDR, kernel driver, remote shell,
+arbitrary command execution atau monitoring aktivitas pengguna.
+
+## Uninstall dan expiry
 
 ```sh
-GOPROXY=off GOSUMDB=off scripts/build-unix-packages.sh 0.0.0-dev
+sudo eguard-nac uninstall
+sudo eguard-nac uninstall --token <TOKEN>
+sudo eguard-nac uninstall --authorization /path/authorization.json
+# Linux setelah cleanup sukses:
+sudo dpkg -r eguard-nac-agent
+# atau sudo rpm -e eguard-nac-agent
 ```
 
-Script menghasilkan empat binary CGO-disabled Linux/macOS amd64/arm64 dan dua
-konfigurasi nfpm. Jika nfpm tersedia, dibuat deb/rpm; jika tidak, hanya binary +
-YAML (tidak mengunduh tool otomatis). Artefak bukan code-signed. Signing/GPG,
-pkg macOS universal, launchd plist/scripts, dan GitHub release workflow **belum
-tersedia**. Tidak ada prosedur instalasi macOS yang aman/terverifikasi dalam slice
-ini. Jangan menjalankan installer pada shared host.
+Signed Anti-Tamper ON memerlukan authorization signed device-bound, singkat,
+handoff ke service untuk replay/sequence checks. OFF mengizinkan root lokal.
+Temporary expiry cleanup langsung dari verified lifecycle setelah journal/key
+handle ditutup, tidak melewati gate anti-tamper. Linux disable, hapus root/key,
+kemudian stop; binary tetap package-owned, hapus melalui package manager.
+macOS hapus plist/root/key/CLI/install dir lalu bootout system/id.eguard.nac.
+Urutan menghapus state sebelum stop sendiri menghindari proses mati sebelum cleanup;
+namun kegagalan stop/bootout/permission tetap memerlukan recovery operator.
+Prerm Linux menolak **semua enrolled roots**, lebih ketat daripada hanya ON;
+uninstall dahulu. Force purge oleh root tidak dapat dicegah.
 
-Kandidat deb/rpm memasang unit systemd dengan hardening dan postinstall hanya
-`daemon-reload` + `enable`, tidak start. Service tanpa state mencetak
-`Not enrolled.` dan keluar bersih. Preremove menolak semua enrolled roots dan
-mengarahkan operator ke uninstall CLI terlebih dahulu (lebih ketat daripada
-hanya Anti-Tamper ON). Upgrade in-place belum didukung. Setelah uninstall CLI
-berhasil dan root terhapus, removal paket dapat dilanjutkan oleh admin pada VM.
-Root tetap bisa memakai force purge; prerm bukan proteksi terhadap root.
+## Build, signing, release
 
-Uninstall CLI memakai mode anti-tamper dari bootstrap terverifikasi: ON perlu
-token/authorization signed, device-bound dan handoff ke service untuk journal
-replay checks; OFF dapat memakai root lokal. Expiry Temporary memakai callback
-cleanup resmi setelah journal ditutup, tanpa melewati gate anti-tamper. Adapter
-cleanup Unix saat ini hanya disable service dan menghapus root/key, **belum
-menghapus binary/registrasi launchd**; expiry macOS KeepAlive belum aman untuk
-rilis dan memerlukan completion + VM acceptance. Jangan klaim uninstall lengkap.
+```sh
+GOFLAGS= GOPROXY=https://proxy.golang.org go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
+scripts/build-unix-packages.sh 1.2.3
+```
 
-## Collection dan batas lingkup
+Binary linux/darwin amd64/arm64 CGO-disabled; nfpm menghasilkan empat paket Linux
+ke dist/unix (gitignored). Export GPG_KEY_FILE untuk signing serta
+NFPM_DEB_PASSPHRASE / NFPM_RPM_PASSPHRASE bila key terenkripsi. Tanpa key unsigned.
+Universal lipo hanya CI macOS. build-pkg.sh memakai codesign identifier id.eguard.nac,
+hardened runtime, productsign, notarytool --wait (ASC key preferred, Apple ID fallback),
+stapler. Env kosong melewati signing; unsigned bukan klaim publisher terpercaya.
+Workflow release-nac-agent.yml: tag nac-v* / dispatch version, test/linux/macos/
+windows-binaries/release; Windows hanya binary, bukan installer netral.
+Manifest eguard-nac-agent-release.json, SHA256SUMS dan CycloneDX SBOM disertakan.
+SBOM generator masih berlabel TEST-UNSIGNED secara konservatif walau signing aktif.
 
-Unix collector saat ini hanya hostname, OS GOOS/GOARCH dan adapter dari
-`net.Interfaces`. Domain, AV, firewall, secure boot, disk encryption, reboot,
-route provenance, inventory software dan signed-in user **belum diintegrasikan**:
-Unknown/uncollected, bukan bukti No/Yes. Parser fixture Linux/macOS dan akuisisi
-provider yang diminta masih pekerjaan lanjutan. Timestamp/TTL boundary tetap
-berlaku; error/cancel tidak memperpanjang freshness.
+## Publikasi paket ke server eGuard
 
-Produk hanya NAC posture/inventory/status. Tidak ada EDR, kernel driver, remote
-shell, arbitrary command execution atau monitoring aktivitas pengguna. Perintah
-service lokal memakai path dan argv tetap, deadline, tanpa shell.
+Pada mesin operator (bukan agent host), verifikasi checksum dan signature dahulu.
+Ganti 1.2.3 dengan versi release yang sama di manifest. Salin lima file berikut:
+
+```sh
+scp eguard-nac-agent_1.2.3_amd64.deb eguard-nac-agent_1.2.3_arm64.deb \
+ eguard-nac-agent-1.2.3-1.x86_64.rpm eguard-nac-agent-1.2.3-1.aarch64.rpm \
+ eGuard-NAC-1.2.3.pkg admin@gateway:/tmp/nac-packages/
+# Pada server, setelah memverifikasi ulang checksum/signature:
+sudo install -d -m 0755 /usr/local/eg/share/nac-agent/
+sudo install -m 0644 /tmp/nac-packages/eguard-nac-agent_1.2.3_amd64.deb \
+ /tmp/nac-packages/eguard-nac-agent_1.2.3_arm64.deb \
+ /tmp/nac-packages/eguard-nac-agent-1.2.3-1.x86_64.rpm \
+ /tmp/nac-packages/eguard-nac-agent-1.2.3-1.aarch64.rpm \
+ /tmp/nac-packages/eGuard-NAC-1.2.3.pkg /usr/local/eg/share/nac-agent/
+```
+
+Buat staging /tmp/nac-packages di server sebelum scp. Publikasi/static download
+routing, permission dan fingerprint admin server tetap tanggung jawab operator;
+agent tidak mengubah server. Jangan mengganti pola nama file di atas.
 
 ## Validasi lokal
 
-- RED: test identity gagal compile karena Identity/FetchIdentity/ValidateServer
-  belum tersedia; test persistence gagal compile karena WriteIdentity/LoadIdentity
-  belum tersedia. Kemudian GREEN.
-- `go test -race -count=1 ./...` Linux lulus setelah perbaikan.
-- `go vet ./...` Linux/darwin/windows lulus.
-- CGO-disabled `go build ./...`: linux amd64/arm64, darwin amd64/arm64,
-  windows amd64 lulus.
-- Baseline HEAD pada detached temporary worktree: race suite lulus. Satu run
-  awal working tree mengalami timeout fixture process-group boundary; rerun
-  penuh lulus. Tidak diklaim sebagai baseline failure yang reproducible.
-- nfpm tidak tersedia lokal; deb/rpm belum dibuat/diinspeksi. macOS pkg,
-  codesign/notarytool serta runtime service/enroll/uninstall nyata NOT RUN.
+Parser Linux/macOS RED (fungsi belum ada) lalu GREEN. Fixture provider memakai
+t.TempDir + runner palsu; tidak membaca provider nyata. Cleanup exact-command tests
+untuk kedua OS; uninstall signed gate diuji paket uninstall/servicefactory.
+Race suite seluruh modul, vet linux/darwin/windows dan CGO-disabled build
+linux amd64/arm64, darwin amd64/arm64, windows amd64 lulus. YAML parse dan actionlint
+v1.7.7 lulus. nfpm v2.41.1 berhasil didapat; empat paket 0.0.0-dev dibangun;
+kedua DEB diinspeksi dpkg-deb -c/-I. rpm tool tidak tersedia untuk -qlp.
+macOS pkg build/sign/notarize/install, runtime systemd/launchd dan release CI NOT RUN.
