@@ -695,10 +695,32 @@ rule bootstrap_last_known_good_yara {
         .detection_state
         .process_event(&event)
         .expect("evaluate event");
-    assert!(out
-        .yara_hits
-        .iter()
-        .any(|hit| hit.rule_name == "bootstrap_last_known_good_yara"));
+    assert!(out.yara_hits.is_empty());
+    assert!(!out.signals.yara_hit);
+    runtime.detection_state.drain_yara_for_tests();
+    runtime
+        .buffer_completed_yara(124)
+        .expect("buffer completed bootstrap scan");
+    let rows = runtime.buffer.peek_batch(10).expect("read buffered alerts");
+    assert_eq!(rows.len(), 1);
+    let alert = &rows[0].1;
+    assert_eq!(alert.event_type, "alert");
+    assert_eq!(alert.rule_name, "bootstrap_last_known_good_yara");
+    let payload: serde_json::Value =
+        serde_json::from_str(&alert.payload_json).expect("parse YARA alert");
+    assert_eq!(
+        payload["observation_id"],
+        serde_json::to_value(&out.observation_id).unwrap()
+    );
+    assert_eq!(
+        payload["event"]["file_path"],
+        marker_file.display().to_string()
+    );
+    assert_eq!(payload["detection"]["yara_hits"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        payload["detection"]["yara_hits"][0]["rule"],
+        "bootstrap_last_known_good_yara"
+    );
 
     std::env::remove_var("EGUARD_THREAT_INTEL_REPLAY_FLOOR_PATH");
     std::env::remove_var("EGUARD_THREAT_INTEL_LAST_KNOWN_GOOD_PATH");

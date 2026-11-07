@@ -547,10 +547,32 @@ rule bundle_runtime_marker {
         .detection_state
         .process_event(&stage_one)
         .expect("evaluate stage one event");
-    assert!(stage_one_out
-        .yara_hits
-        .iter()
-        .any(|hit| hit.rule_name == "bundle_runtime_marker"));
+    assert!(stage_one_out.yara_hits.is_empty());
+    assert!(!stage_one_out.signals.yara_hit);
+    runtime.detection_state.drain_yara_for_tests();
+    runtime
+        .buffer_completed_yara(10_001)
+        .expect("buffer completed bundle scan");
+    let rows = runtime.buffer.peek_batch(10).expect("read buffered alerts");
+    assert_eq!(rows.len(), 1);
+    let alert = &rows[0].1;
+    assert_eq!(alert.event_type, "alert");
+    assert_eq!(alert.rule_name, "bundle_runtime_marker");
+    let payload: serde_json::Value =
+        serde_json::from_str(&alert.payload_json).expect("parse YARA alert");
+    assert_eq!(
+        payload["observation_id"],
+        serde_json::to_value(&stage_one_out.observation_id).unwrap()
+    );
+    assert_eq!(
+        payload["event"]["file_path"],
+        marker_file.display().to_string()
+    );
+    assert_eq!(payload["detection"]["yara_hits"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        payload["detection"]["yara_hits"][0]["rule"],
+        "bundle_runtime_marker"
+    );
 
     let stage_two = detection::TelemetryEvent {
         ts_unix: 10_005,
