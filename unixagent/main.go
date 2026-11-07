@@ -27,16 +27,17 @@ func Main(args []string) error {
 		if e := boundary.AwaitGate(os.Stdin, boundary.GateTimeout); e != nil {
 			return e
 		}
-		return json.NewEncoder(os.Stdout).Encode(collector.CollectNative(context.Background(), ""))
-	}
-	if len(args) == 4 && args[0] == boundary.InventoryVerb {
-		return errors.New("invalid inventory arguments")
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		return json.NewEncoder(os.Stdout).Encode(collector.CollectNative(ctx, ""))
 	}
 	if len(args) == 3 && args[0] == boundary.InventoryVerb && (args[1] == "on" || args[1] == "off") && (args[2] == "on" || args[2] == "off") {
 		if e := boundary.AwaitGate(os.Stdin, boundary.GateTimeout); e != nil {
 			return e
 		}
-		return json.NewEncoder(os.Stdout).Encode(collector.CollectInventory(context.Background(), args[1] == "on", args[2] == "on"))
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		return json.NewEncoder(os.Stdout).Encode(collector.CollectInventory(ctx, args[1] == "on", args[2] == "on"))
 	}
 	if len(args) == 0 {
 		return serve()
