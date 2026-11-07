@@ -2,3 +2,5 @@
 /dist/*.exe
 /dist/payload/
 *.test.exe
+
+/dist/unix/
