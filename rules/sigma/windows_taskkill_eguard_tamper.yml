@@ -1,15 +1,19 @@
 # eGuard-authored endpoint rule; GPL-2.0-or-later.
+# RAFIX shared: the engine also enforces package/updater ancestry exclusions.
 title: windows_taskkill_eguard_tamper
 id: windows_taskkill_eguard_tamper
-level: high
-status: "experimental"
-tags: ["attack.t1562"]
-mitre_techniques: ["T1562"]
+level: medium
+status: experimental
+tags: ["attack.t1562.001"]
+mitre_techniques: ["T1562.001"]
 logsource:
   product: windows
+  category: process_creation
 detection:
-  sequence:
-    - event_class: process_exec
-      process_any_of: [taskkill.exe, powershell.exe, pwsh.exe, sc.exe, net.exe, net1.exe, wmic.exe]
-      command_line_contains: ["/im eguard", "stop-process -name eguard", "stop-service eguard", "sc stop eguard", "sc.exe stop eguard", "sc delete eguard", "sc.exe delete eguard", "sc config eguard", "sc.exe config eguard", "net stop eguard", "set-service eguard", "where name='eguard"]
-      within_secs: 30
+  kill:
+    Image|endswith: '\taskkill.exe'
+    CommandLine|re: '(?i)(?:^|\s)/im\s+"?eguard-agent\.exe"?(?:\s|$)'
+  service:
+    Image|endswith: '\sc.exe'
+    CommandLine|re: '(?i)(?:^|\s)sc(?:\.exe)?\s+(?:stop|config|delete)\s+"?eguard-agent"?(?:\s|$)'
+  condition: kill or service

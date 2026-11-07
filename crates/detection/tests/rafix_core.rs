@@ -20,6 +20,9 @@ fn event(
         parent_process: parent.into(),
         session_id: 1,
         file_path: None,
+        // RAFIX shared: additive image/unlink schema.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: (class == NetworkConnect).then_some(4444),
@@ -547,7 +550,6 @@ fn intermediate_non_root_child_does_not_erase_elevation_parent() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION: needs AML generic pipe heuristic fix"]
 fn installer_pipeline_unquoted_argv_has_no_high_or_wrapper_duplicate() {
     // /proc cmdline joining does not restore shell quoting around the -c argument.
     for (parent_cmd, downloader, download_cmd, shell) in [
@@ -569,7 +571,7 @@ fn installer_pipeline_unquoted_argv_has_no_high_or_wrapper_duplicate() {
         assert_eq!(
             parent.confidence,
             Confidence::None,
-            "parent argv is context: {parent_cmd}; {:?}",
+            "joined argv has no attested quoting: {parent_cmd}; {:?}",
             parent.exploit_indicators
         );
         let download = engine.process_event(&event(
@@ -588,6 +590,7 @@ fn installer_pipeline_unquoted_argv_has_no_high_or_wrapper_duplicate() {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].confidence, Confidence::Medium);
         assert_eq!(alerts[0].temporal_hits, vec!["phi_download_pipe_shell"]);
+        assert_eq!(engine.pipe_alert_suppressed_total(), 0);
     }
 }
 

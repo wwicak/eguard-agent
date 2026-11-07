@@ -24,6 +24,9 @@ pub struct TemporalEngine {
     subscriptions: HashMap<EventClass, Vec<usize>>,
     pid_exec_epoch: HashMap<u32, u64>,
     pid_parents: HashMap<u32, u32>,
+    // RAFIX shared: bounded with the existing PID metadata, never a host-root join.
+    package_transactions: HashSet<u32>,
+    pipe_high: bool,
     pid_last_seen_ts: HashMap<u32, i64>,
     reorder_tolerance_secs: i64,
     max_observed_ts: i64,
@@ -110,6 +113,7 @@ impl TemporalEngine {
     }
 
     pub fn observe(&mut self, event: &TelemetryEvent) -> Vec<String> {
+        self.pipe_high = false;
         let mut hits = Vec::new();
 
         let horizon_ts = self.advance_observation_horizon(event.ts_unix);
@@ -127,6 +131,16 @@ impl TemporalEngine {
 
         self.record_entity_timestamp(event.pid, event.ts_unix);
         self.pid_parents.insert(event.pid, event.ppid);
+        if event.event_class == EventClass::ProcessExec {
+            self.package_transactions.remove(&event.pid);
+            if crate::tamper::is_update_worker(event)
+                || crate::tamper::is_package_manager(&event.process)
+                || crate::tamper::is_package_manager(&event.parent_process)
+                || self.package_transactions.contains(&event.ppid)
+            {
+                self.package_transactions.insert(event.pid);
+            }
+        }
 
         let current_exec_epoch = self.bump_exec_epoch(event.pid, event.event_class);
         let event_identity_fingerprint = Self::identity_fingerprint(event);
@@ -195,6 +209,25 @@ impl TemporalEngine {
                 {
                     let advanced = stage_idx + 1;
                     if advanced >= automaton.transitions.len() {
+                        if automaton.name == "phi_download_pipe_shell" {
+                            // RAFIX shared: whichever sibling is the downloader supplies the URL.
+                            self.pipe_high |= crate::exploit::download_is_high(
+                                state
+                                    .command_line
+                                    .as_deref()
+                                    .unwrap_or("")
+                                    .split_whitespace()
+                                    .chain(
+                                        event
+                                            .command_line
+                                            .as_deref()
+                                            .unwrap_or("")
+                                            .split_whitespace(),
+                                    ),
+                                &event.parent_process,
+                                event.uid,
+                            );
+                        }
                         hits.push(automaton.name.clone());
                         self.states.remove(&key);
                         continue;
@@ -273,7 +306,17 @@ impl TemporalEngine {
         hits
     }
 
+    pub(crate) fn exec_epoch(&self, pid: u32) -> Option<u64> {
+        self.pid_exec_epoch.get(&pid).copied()
+    }
+    pub(crate) fn in_package_transaction(&self, pid: u32) -> bool {
+        self.package_transactions.contains(&pid)
+    }
+
     pub fn rule_level(&self, name: &str) -> RuleLevel {
+        if name == "phi_download_pipe_shell" && self.pipe_high {
+            return RuleLevel::High;
+        }
         self.automata
             .iter()
             .filter(|a| a.name == name)
@@ -348,6 +391,7 @@ impl TemporalEngine {
         self.pid_last_seen_ts.remove(&pid);
         self.pid_exec_epoch.remove(&pid);
         self.pid_parents.remove(&pid);
+        self.package_transactions.remove(&pid);
     }
 
     fn enforce_state_capacity(&mut self) {
@@ -402,6 +446,8 @@ impl TemporalEngine {
                 self.states.retain(|_, state| state.pid != victim_pid);
             }
 
+            self.package_transactions.remove(&victim_pid);
+            self.pid_parents.remove(&victim_pid);
             let removed_last_seen = self.pid_last_seen_ts.remove(&victim_pid).is_some();
             let removed_exec_epoch = self.pid_exec_epoch.remove(&victim_pid).is_some();
             if removed_last_seen || removed_exec_epoch {
@@ -488,6 +534,8 @@ impl TemporalEngine {
         let removed_exec_epoch = before_exec_epoch.saturating_sub(self.pid_exec_epoch.len());
 
         self.pid_parents.retain(|pid, _| tracked_pids.contains(pid));
+        self.package_transactions
+            .retain(|pid| tracked_pids.contains(pid));
 
         let total_pruned = (removed_states as u64)
             .saturating_add(removed_last_seen as u64)
@@ -641,7 +689,13 @@ mod rule_names_tests {
     fn rule_names_preserve_insertion_order() {
         let mut engine = TemporalEngine::new();
         for name in ["first", "second"] {
-            engine.add_rule(TemporalRule { name: name.into(), stages: Vec::new() });
+            // RAFIX shared: additive core rule fields retain their default semantics.
+            engine.add_rule(TemporalRule {
+                name: name.into(),
+                stages: Vec::new(),
+                level: Default::default(),
+                any_order: false,
+            });
         }
         assert_eq!(engine.rule_names(), vec!["first", "second"]);
     }

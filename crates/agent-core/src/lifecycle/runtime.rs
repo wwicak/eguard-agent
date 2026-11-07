@@ -199,6 +199,9 @@ impl AgentRuntime {
         let host_mem_total_bytes = linux_host_mem_total_bytes();
         let low_memory_host = host_is_low_memory(host_mem_total_bytes);
         let detection_shards = resolve_detection_shard_count();
+        if detection_shards > 1 {
+            warn!(detection_shards, "benchmark shard override: cross-process correlation is incoherent (R-SHARD-AFFINITY)");
+        }
         #[cfg(target_os = "macos")]
         let init_bundle_path = String::new();
         #[cfg(not(target_os = "macos"))]
@@ -736,6 +739,9 @@ impl AgentRuntime {
             telemetry_raw_backlog_dropped_total: self.metrics.telemetry_raw_backlog_dropped_total,
             telemetry_event_txn_total: self.metrics.telemetry_event_txn_total,
             telemetry_event_txn_coalesced_total: self.metrics.telemetry_event_txn_coalesced_total,
+            detection_pipe_alert_suppressed_total: self
+                .metrics
+                .detection_pipe_alert_suppressed_total,
             response_action_deduped_total: self.metrics.response_action_deduped_total,
             playbook_reports_truncated_total: self.metrics.playbook_reports_truncated_total,
             ioc_signals_truncated_total: self.metrics.ioc_signals_truncated_total,

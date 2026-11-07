@@ -91,3 +91,5 @@ mod tests_resource_budget;
 mod tests_stub_completion;
 #[cfg(test)]
 mod tests_windows_fp;
+
+mod pipe_alert;

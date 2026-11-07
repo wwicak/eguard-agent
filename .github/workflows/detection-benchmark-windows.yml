@@ -59,6 +59,13 @@ jobs:
         run: |
           cargo check --target x86_64-pc-windows-msvc -p agent-core
 
+      - name: Run integrated precision and production-shape regressions
+        shell: bash
+        run: |
+          cargo test -p detection --test rafix_integration --test sigma_rule_levels -- --test-threads=1
+          cargo test -p agent-core production_pipeline_matrix_uses_runtime_shard_resolver -- --test-threads=1
+          cargo test -p agent-core rafix_windows_manifest_rename_is_not_a_persistence_write -- --test-threads=1
+
       - name: Run Windows detection benchmark
         shell: bash
         run: |

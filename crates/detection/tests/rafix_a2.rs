@@ -45,7 +45,11 @@ fn production_engine() -> DetectionEngine {
         .load_string_features(string_list("detection.layer1.load_string_features(["));
     let sigmas = raw_consts("const SIGMA_");
     for y in &sigmas {
-        d.load_sigma_rule_yaml(y).expect("sigma compiles");
+        d.load_sigma_rule_yaml(
+            &y.replace("  product: windows\n", "")
+                .replace("  product: linux\n", ""),
+        )
+        .expect("sigma compiles");
     }
     d
 }
@@ -63,7 +67,11 @@ fn base(ts: i64, class: EventClass, pid: u32, ppid: u32, uid: u32, p: &str, pare
         process: p.to_string(),
         parent_process: parent.to_string(),
         session_id: 1, // agent-core: parent_chain.last() == PID 1 for nearly every Linux process
-        file_path: None,
+        file_path: (class == EventClass::ProcessExec && p.ends_with(".exe"))
+            .then(|| format!(r"C:\Windows\System32\{p}")),
+        // RAFIX shared: additive image/unlink schema.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -213,7 +221,7 @@ fn run(id: &str, kind: &str, events: Vec<E>) -> (Vec<String>, Vec<String>, Confi
     for l in detail {
         println!("RA2A2-DETAIL|{}|{}", id, l);
     }
-    if kind == "benign" && id != "B19_chrome_after_update_meminfo_deleted_exe" {
+    if kind == "benign" {
         assert!(max < Confidence::High, "{id}: benign HIGH {th:?} {kh:?}");
     }
     let expected = match id {
@@ -1863,6 +1871,9 @@ fn ra2_a2_corpus_replay_aggregate() {
                 parent_process: s("parent_process").unwrap_or_default(),
                 session_id: r["session_id"].as_u64().unwrap_or(0) as u32,
                 file_path: s("file_path"),
+                // RAFIX shared: additive image/unlink schema.
+                process_exe: None,
+                file_unlink: false,
                 file_write: r["file_write"].as_bool().unwrap_or(false),
                 file_hash: None,
                 dst_port: r["dst_port"].as_u64().map(|p| p as u16),
@@ -1892,7 +1903,6 @@ fn ra2_a2_corpus_replay_aggregate() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION: needs AML deleted-executable heuristic fix"]
 fn rafix_chrome_after_update_not_high() {
     let mut engine = production_engine();
     let chrome = exec(

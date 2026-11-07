@@ -48,6 +48,8 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
     TickEvaluation {
         detection_event: det_event.clone(),
         detection_outcome: detection::DetectionOutcome {
+            // RAFIX shared: no suppression in unrelated outcome fixtures.
+            pipe_alert_suppressed: false,
             confidence,
             signals: detection::DetectionSignals {
                 z1_exact_ioc: false,
@@ -168,6 +170,8 @@ fn telemetry_audit_payload_includes_rule_attribution() {
     layer1.matched_signatures = vec!["sig".to_string()];
 
     let outcome = detection::DetectionOutcome {
+        // RAFIX shared: no suppression in unrelated outcome fixtures.
+        pipe_alert_suppressed: false,
         confidence: detection::Confidence::High,
         signals: detection::DetectionSignals {
             z1_exact_ioc: false,
@@ -291,6 +295,8 @@ fn telemetry_payload_includes_nac_fields() {
     };
 
     let outcome = detection::DetectionOutcome {
+        // RAFIX shared: no suppression in unrelated outcome fixtures.
+        pipe_alert_suppressed: false,
         confidence: detection::Confidence::High,
         signals: detection::DetectionSignals {
             z1_exact_ioc: false,
@@ -406,6 +412,8 @@ fn telemetry_payload_includes_correlation_event_fields() {
     };
 
     let outcome = detection::DetectionOutcome {
+        // RAFIX shared: no suppression in unrelated outcome fixtures.
+        pipe_alert_suppressed: false,
         confidence: detection::Confidence::High,
         signals: detection::DetectionSignals {
             z1_exact_ioc: false,
@@ -963,8 +971,14 @@ async fn observability_snapshot_reports_bounded_response_queue_progress() {
 
 fn corroborated_evaluation(confidence: Confidence, ts: i64, pid: u32) -> TickEvaluation {
     let mut evaluation = tick_evaluation_for_confidence(confidence, ts, pid);
-    evaluation.detection_outcome.temporal_hits.push("credential_dump_sequence".into());
-    evaluation.detection_outcome.exploit_indicators.push("process_injection".into());
+    evaluation
+        .detection_outcome
+        .temporal_hits
+        .push("credential_dump_sequence".into());
+    evaluation
+        .detection_outcome
+        .exploit_indicators
+        .push("process_injection".into());
     evaluation
 }
 

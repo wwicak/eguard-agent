@@ -560,7 +560,7 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-// RAFIX shared: loader/swap fixture literals obey fail-closed YARA conditions.
+    // RAFIX shared: loader/swap fixture literals obey fail-closed YARA conditions.
     use super::{
         build_detection_engine_with_ransomware_policy, configured_or_fallback_dirs,
         DetectionSourcePaths,
@@ -685,7 +685,7 @@ rule eguard_custom_dir_test {
   strings:
     $marker = "eguard-custom-yara-marker"
   condition:
-    $marker at 0 and filesize <= 128
+    $marker
 }
 "#,
         )
@@ -711,6 +711,53 @@ rule eguard_custom_dir_test {
 
         let outcome = engine.process_event(&event);
         assert!(outcome.yara_hits.is_empty());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn bootstrap_loads_yara_rules_from_configured_directory() {
+        let base = unique_temp_dir("yara");
+        let sigma_dir = base.join("sigma");
+        let yara_dir = base.join("yara");
+        let ioc_dir = base.join("ioc");
+        std::fs::create_dir_all(&sigma_dir).expect("create sigma dir");
+        std::fs::create_dir_all(&yara_dir).expect("create yara dir");
+        std::fs::create_dir_all(&ioc_dir).expect("create ioc dir");
+        std::fs::write(
+            yara_dir.join("custom.yar"),
+            r#"
+rule eguard_custom_dir_test {
+  strings:
+    $marker = "eguard-custom-yara-marker"
+  condition:
+    $marker at 0 and filesize <= 128
+}
+"#,
+        )
+        .expect("write yara rule");
+
+        let sample_path = base.join("sample.bin");
+        std::fs::write(&sample_path, b"eguard-custom-yara-marker").expect("write sample");
+
+        let sources = DetectionSourcePaths {
+            sigma_dir,
+            yara_dir,
+            ioc_dir,
+            control_plane_peers: Vec::new(),
+        };
+        let mut engine =
+            build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+
+        let mut event = base_event();
+        event.event_class = EventClass::FileOpen;
+        // RAFIX shared: the loader sample models the completed file drop above, not a read.
+        event.file_write = true;
+        event.file_path = Some(sample_path.to_string_lossy().to_string());
+
+        let outcome = engine.process_event(&event);
+        assert_eq!(outcome.yara_hits.len(), 1);
+        assert_eq!(outcome.yara_hits[0].rule_name, "eguard_custom_dir_test");
 
         let _ = std::fs::remove_dir_all(base);
     }
@@ -791,6 +838,20 @@ rule eguard_custom_dir_test {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    fn install_windows_builtins_for_test(engine: &mut detection::DetectionEngine) {
+        if !cfg!(target_os = "windows") {
+            for source in [
+                super::SIGMA_WIN_REG_SAVE_SAM,
+                super::SIGMA_WIN_PS_DOWNLOAD_CRADLE,
+                super::SIGMA_WIN_SHADOW_COPY_DELETE,
+            ] {
+                engine
+                    .load_sigma_rule_yaml(&source.replace("  product: windows\n", ""))
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn bootstrap_detects_windows_reg_save_sam_command() {
         let base = unique_temp_dir("win-reg-save");
@@ -806,11 +867,13 @@ rule eguard_custom_dir_test {
 
         let mut engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        install_windows_builtins_for_test(&mut engine);
         let mut event = base_event();
         event.process = "reg.exe".to_string();
         event.parent_process = "cmd.exe".to_string();
         event.command_line = Some("reg save HKLM\\SAM C:\\temp-sam.hiv".to_string());
 
+        event.file_path = Some(format!(r"C:\Windows\System32\{}", event.process));
         let outcome = engine.process_event(&event);
         assert!(outcome
             .temporal_hits
@@ -835,6 +898,7 @@ rule eguard_custom_dir_test {
 
         let mut engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        install_windows_builtins_for_test(&mut engine);
         let mut event = base_event();
         event.process = "powershell.exe".to_string();
         event.parent_process = "explorer.exe".to_string();
@@ -843,6 +907,7 @@ rule eguard_custom_dir_test {
                 .to_string(),
         );
 
+        event.file_path = Some(format!(r"C:\Windows\System32\{}", event.process));
         let outcome = engine.process_event(&event);
         assert!(outcome
             .temporal_hits
@@ -867,11 +932,13 @@ rule eguard_custom_dir_test {
 
         let mut engine =
             build_detection_engine_with_ransomware_policy(RansomwarePolicy::default(), &sources);
+        install_windows_builtins_for_test(&mut engine);
         let mut event = base_event();
         event.process = "vssadmin.exe".to_string();
         event.parent_process = "cmd.exe".to_string();
         event.command_line = Some("vssadmin delete shadows /all /quiet".to_string());
 
+        event.file_path = Some(format!(r"C:\Windows\System32\{}", event.process));
         let outcome = engine.process_event(&event);
         assert!(outcome
             .temporal_hits
@@ -1291,7 +1358,7 @@ rule eguard_custom_dir_test {
             ),
             0
         );
-        // Group 5 remains reviewable; no blanket package-backup allowlist.
+        // RAFIX shared: ordinary backup is quiet; actual sensitive staging stays positive.
         let mut engine = detp1_engine("198.51.100.20:50053");
         engine
             .load_sigma_rule_yaml(include_str!(
@@ -1307,6 +1374,16 @@ rule eguard_custom_dir_test {
             "dpkg-db-backup",
         );
         archive.command_line = Some("tar -czf /var/backups/package-db.tgz /var/lib/dpkg".into());
+        assert_eq!(
+            detp1_replay_count(
+                &mut engine,
+                &[archive.clone()],
+                "linux_data_staging_archive"
+            ),
+            0
+        );
+        archive.pid += 1;
+        archive.command_line = Some("tar -czf /tmp/s.tgz /etc/shadow /root/.ssh".into());
         assert_eq!(
             detp1_replay_count(&mut engine, &[archive], "linux_data_staging_archive"),
             1
@@ -1446,6 +1523,8 @@ rule eguard_custom_dir_test {
         .unwrap();
         let mut e = base_event();
         e.event_class = EventClass::FileOpen;
+        // RAFIX shared: this fixture writes the file before each scan.
+        e.file_write = true;
         e.file_path = Some(sample.to_string_lossy().into());
         assert!(
             engine.yara.scan_event(&e).is_empty(),
@@ -1477,4 +1556,9 @@ rule eguard_eicar_test {
         assert_eq!(hits[0].rule_name, "eguard_eicar_test");
         std::fs::remove_dir_all(base).unwrap();
     }
+}
+
+#[cfg(test)]
+mod rafix_integration {
+    include!("rafix_integration.rs");
 }

@@ -14,11 +14,7 @@ const AGENT_FILES: &[&str] = &[
 
 pub fn detect_tamper_indicators(event: &TelemetryEvent) -> Vec<String> {
     if event.event_class == EventClass::ProcessExec {
-        let installer_parent = matches!(
-            crate::behavioral::basename(&event.parent_process).as_str(),
-            "dpkg" | "rpm" | "dnf" | "yum" | "apt" | "apt-get" | "package_script_service"
-        );
-        if !installer_parent && agent_service_control(event) {
+        if !is_package_manager(&event.parent_process) && agent_service_control(event) {
             return vec!["tamper:agent_service_control".into()];
         }
         return Vec::new();
@@ -54,14 +50,61 @@ pub fn detect_tamper_indicators(event: &TelemetryEvent) -> Vec<String> {
     }
 }
 
-fn agent_service_control(event: &TelemetryEvent) -> bool {
-    let process = crate::behavioral::basename(&event.process);
-    let argv: Vec<_> = event
+// RAFIX shared: updater ancestry is propagated in the bounded temporal PID metadata.
+pub(crate) fn is_update_worker(event: &TelemetryEvent) -> bool {
+    matches!(
+        crate::behavioral::basename(&event.process).as_str(),
+        "sh" | "bash" | "powershell.exe" | "pwsh.exe"
+    ) && event
         .command_line
         .as_deref()
         .unwrap_or("")
         .split_whitespace()
-        .map(|s| s.trim_matches(['\'', '\"']))
+        .any(|arg| {
+            matches!(
+                arg.trim_matches(['\'', '"'])
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(""),
+                "apply-agent-update-worker.sh" | "apply-agent-update-worker.ps1"
+            )
+        })
+}
+
+pub(crate) fn is_package_manager(process: &str) -> bool {
+    matches!(
+        crate::behavioral::basename(process).as_str(),
+        "dpkg"
+            | "rpm"
+            | "dnf"
+            | "yum"
+            | "apt"
+            | "apt-get"
+            | "zypper"
+            | "unattended-upgrade"
+            | "unattended-upgr"
+            | "packagekit"
+            | "packagekitd"
+            | "msiexec"
+            | "msiexec.exe"
+            | "eguard-agent"
+            | "eguard-agent.exe"
+            | "eguard-agent-updater"
+            | "eguard-agent-updater.exe"
+            | "package_script_service"
+    )
+}
+
+fn agent_service_control(event: &TelemetryEvent) -> bool {
+    let process = crate::behavioral::basename(&event.process);
+    let lower = event
+        .command_line
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let argv: Vec<_> = lower
+        .split_whitespace()
+        .map(|s| s.trim_matches(['\'', '"', ';']))
         .collect();
     let argv = if argv
         .first()
@@ -71,7 +114,12 @@ fn agent_service_control(event: &TelemetryEvent) -> bool {
     } else {
         &argv[..]
     };
-    let target = |a: &&str| matches!(*a, "eguard-agent" | "eguard-agent.service");
+    let target = |a: &&str| {
+        matches!(
+            *a,
+            "eguard-agent" | "eguard-agent.service" | "eguard-agent.exe"
+        )
+    };
     match process.as_str() {
         "systemctl" => {
             argv.iter()
@@ -81,7 +129,63 @@ fn agent_service_control(event: &TelemetryEvent) -> bool {
         }
         "service" => argv.first().is_some_and(target) && argv.get(1) == Some(&"stop"),
         "pkill" | "killall" => argv.iter().any(target),
+        "sc" | "sc.exe" => {
+            matches!(argv.first(), Some(&"stop" | &"config" | &"delete"))
+                && argv.get(1).is_some_and(target)
+        }
+        "net" | "net.exe" | "net1.exe" => {
+            argv.first() == Some(&"stop") && argv.get(1).is_some_and(target)
+        }
+        "taskkill" | "taskkill.exe" => argv.windows(2).any(|a| a[0] == "/im" && target(&a[1])),
+        "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe" => powershell_stop_service(&lower),
         _ => false,
+    }
+}
+
+fn powershell_stop_service(command: &str) -> bool {
+    use crate::exploit::{lex, Token};
+    let Some(tokens) = lex(command) else {
+        return false;
+    };
+    let tokens = if let Some(idx) = tokens
+        .iter()
+        .position(|t| matches!(t, Token::Word(w) if w == "-command" || w == "-c"))
+    {
+        &tokens[idx + 1..]
+    } else {
+        &tokens[..]
+    };
+    let inner;
+    let tokens = if let [Token::Word(script)] = tokens {
+        let Some(parsed) = lex(script) else {
+            return false;
+        };
+        inner = parsed;
+        &inner[..]
+    } else {
+        tokens
+    };
+    let args: Vec<_> = tokens
+        .iter()
+        .take_while(|t| matches!(t, Token::Word(_)))
+        .filter_map(|t| {
+            if let Token::Word(w) = t {
+                Some(w.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    args.first() == Some(&"stop-service") && {
+        let args = if args.get(1) == Some(&"-name") {
+            &args[2..]
+        } else {
+            &args[1..]
+        };
+        matches!(
+            args.first(),
+            Some(&"eguard-agent" | &"eguard-agent.service")
+        )
     }
 }
 

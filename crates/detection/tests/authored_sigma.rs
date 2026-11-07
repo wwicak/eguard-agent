@@ -26,6 +26,9 @@ fn event(v: &Value, ts: i64) -> TelemetryEvent {
                 }
             })
         }),
+        // RAFIX shared: additive image/unlink schema.
+        process_exe: None,
+        file_unlink: false,
         file_write: v["file_write"].as_bool().unwrap_or(false),
         command_line: v["cmdline"].as_str().map(String::from),
         file_hash: None,

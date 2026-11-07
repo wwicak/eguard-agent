@@ -821,6 +821,14 @@ mod tests {
         let event = super::to_detection_event(&native, 1);
         assert!(!event.file_write);
         assert!(!event.file_unlink);
+        assert!(event.file_path.is_none());
+        let mut engine = detection::DetectionEngine::default_with_rules();
+        let out = engine.process_event(&event);
+        assert!(
+            out.temporal_hits.is_empty(),
+            "unknown role must not arm Startup persistence: {out:?}"
+        );
+        assert_eq!(out.confidence, detection::Confidence::None);
     }
 
     // RAFIX shared: pin image/invocation separation and mutation semantics.

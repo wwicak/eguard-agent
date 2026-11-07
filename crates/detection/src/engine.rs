@@ -107,6 +107,7 @@ impl Default for DetectionAllowlist {
 #[derive(Debug, Clone)]
 pub struct DetectionOutcome {
     pub confidence: Confidence,
+    pub pipe_alert_suppressed: bool,
     pub signals: DetectionSignals,
     pub temporal_hits: Vec<String>,
     pub kill_chain_hits: Vec<String>,
@@ -127,6 +128,7 @@ impl Default for DetectionOutcome {
     fn default() -> Self {
         Self {
             confidence: Confidence::None,
+            pipe_alert_suppressed: false,
             signals: DetectionSignals::default(),
             temporal_hits: Vec::new(),
             kill_chain_hits: Vec::new(),
@@ -156,6 +158,7 @@ pub struct DetectionEngine {
     pub yara: YaraEngine,
     pub allowlist: DetectionAllowlist,
     pub cve: CveDatabase,
+    pipe_alerts: crate::pipe_alert::PipeAlerts,
 }
 
 impl DetectionEngine {
@@ -176,6 +179,7 @@ impl DetectionEngine {
             yara: YaraEngine::new(),
             allowlist: DetectionAllowlist::new(),
             cve: CveDatabase::new(),
+            pipe_alerts: Default::default(),
         }
     }
 
@@ -197,6 +201,7 @@ impl DetectionEngine {
             yara,
             allowlist: DetectionAllowlist::new(),
             cve: CveDatabase::new(),
+            pipe_alerts: Default::default(),
         }
     }
 
@@ -212,6 +217,7 @@ impl DetectionEngine {
             yara: YaraEngine::new(),
             allowlist: DetectionAllowlist::new(),
             cve: CveDatabase::new(),
+            pipe_alerts: Default::default(),
         }
     }
 
@@ -268,21 +274,31 @@ impl DetectionEngine {
         Ok(loaded)
     }
 
+    pub fn pipe_alert_suppressed_total(&self) -> u64 {
+        self.pipe_alerts.suppressed_total
+    }
+    pub fn pipe_alert_evicted_total(&self) -> u64 {
+        self.pipe_alerts.evicted_total
+    }
+
     pub fn process_event(&mut self, event: &TelemetryEvent) -> DetectionOutcome {
         let allowed = self.allowlist.is_allowed(event);
         let layer1 = self.layer1.check_event(event);
-        // RAFIX shared: discard non-curated substring hits before ML, telemetry or response.
-        let mut yara_hits = self.yara.scan_event(event);
-        // RAFIX-INTEGRATION: remove when APACKS fail-closed YARA loader lands.
-        yara_hits.retain(|hit| {
-            matches!(
-                hit.rule_name.as_str(),
-                "eguard_eicar_test" | "eguard_eicar_test_file"
-            )
-        });
+        // RAFIX shared: unsupported fallback rules are rejected at load, not by name.
+        let yara_hits = self.yara.scan_event(event);
 
         // ── Layer 2: Temporal pattern correlation ───────────────
-        let temporal_hits = self.layer2.observe(event);
+        self.pipe_alerts.observe(event);
+        let mut temporal_hits = self.layer2.observe(event);
+        let pipe_alert_suppressed = temporal_hits
+            .iter()
+            .any(|name| name == "phi_download_pipe_shell")
+            && self
+                .pipe_alerts
+                .suppress(event, self.layer2.exec_epoch(event.ppid));
+        if pipe_alert_suppressed {
+            temporal_hits.retain(|name| name != "phi_download_pipe_shell");
+        }
 
         // ── Layer 3: Statistical anomaly (KL-divergence) ────────
         let anomaly = self.layer3.observe(event);
@@ -332,7 +348,11 @@ impl DetectionEngine {
 
         let exploit_indicators = detect_exploit_indicators(event);
         let kernel_integrity_indicators = detect_kernel_integrity_indicators(event);
-        let tamper_indicators = detect_tamper_indicators(event);
+        let mut tamper_indicators = detect_tamper_indicators(event);
+        if self.layer2.in_package_transaction(event.pid) {
+            tamper_indicators.retain(|i| i != "tamper:agent_service_control");
+            temporal_hits.retain(|i| i != "windows_taskkill_eguard_tamper");
+        }
         let network_ioc_hit = has_network_ioc_field(&layer1);
         let signals = DetectionSignals {
             z1_exact_ioc: layer1.result == Layer1Result::ExactMatch,
@@ -420,8 +440,21 @@ impl DetectionEngine {
             ml_enhanced_confidence(base_confidence, &ml_result, self.layer5.has_calibration())
         };
 
+        if confidence > Confidence::None
+            && exploit_indicators.iter().any(|i| {
+                matches!(
+                    i.as_str(),
+                    "fileless_pipe_exec" | "fileless_pipe_exec_context"
+                )
+            })
+        {
+            if let Some(epoch) = self.layer2.exec_epoch(event.pid) {
+                self.pipe_alerts.record(event, epoch);
+            }
+        }
         DetectionOutcome {
             confidence,
+            pipe_alert_suppressed,
             signals,
             temporal_hits,
             kill_chain_hits,

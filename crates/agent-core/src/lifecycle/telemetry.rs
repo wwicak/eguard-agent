@@ -436,6 +436,7 @@ impl AgentRuntime {
             "eguard_win_ps_download_cradle" | "eguard_win_ps_download_cradle_office" => {
                 &["T1059.001", "T1105"]
             }
+            "tamper:agent_service_control" | "windows_taskkill_eguard_tamper" => &["T1562.001"],
             "eguard_win_shadow_copy_delete" => &["T1490", "T1486"],
             "eguard_win_event_log_clear" => &["T1070"],
             "eguard_win_schtask_creation" | "eguard_win_schtask_suspicious_action" => &["T1053"],
@@ -601,6 +602,8 @@ mod tests {
     #[test]
     fn mitre_techniques_include_rule_and_process_context() {
         let outcome = DetectionOutcome {
+            // RAFIX shared: no suppression in unrelated outcome fixtures.
+            pipe_alert_suppressed: false,
             confidence: Confidence::High,
             signals: DetectionSignals {
                 z2_temporal: true,

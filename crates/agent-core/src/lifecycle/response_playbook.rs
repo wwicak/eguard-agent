@@ -382,6 +382,8 @@ mod tests {
 
     fn make_outcome(confidence: Confidence, signals: DetectionSignals) -> DetectionOutcome {
         DetectionOutcome {
+            // RAFIX shared: no suppression in unrelated outcome fixtures.
+            pipe_alert_suppressed: false,
             confidence,
             signals,
             temporal_hits: Vec::new(),

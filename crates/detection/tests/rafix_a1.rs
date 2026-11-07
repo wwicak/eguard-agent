@@ -60,7 +60,12 @@ fn production_like_engine() -> DetectionEngine {
     d.layer1.load_string_signatures(sigs);
     d.layer1.load_string_features(feats);
     for source in sigma_sources() {
-        d.load_sigma_rule_yaml(source).expect("built-in compiles");
+        d.load_sigma_rule_yaml(
+            &source
+                .replace("  product: windows\n", "")
+                .replace("  product: linux\n", ""),
+        )
+        .expect("built-in compiles");
     }
     d
 }
@@ -88,7 +93,11 @@ fn ev(
         process: process.into(),
         parent_process: parent.into(),
         session_id: session,
-        file_path: None,
+        file_path: (class == EventClass::ProcessExec && process.ends_with(".exe"))
+            .then(|| format!(r"C:\Windows\System32\{process}")),
+        // RAFIX shared: additive image/unlink schema.
+        process_exe: None,
+        file_unlink: false,
         file_write: false,
         file_hash: None,
         dst_port: None,
@@ -618,7 +627,6 @@ fn ra2_a1_bundle_jsonl_ioc_lines_are_inert() {
 }
 
 #[test]
-#[ignore = "RAFIX-INTEGRATION: needs APACKS sigma compiler"]
 fn rafix_windows_scenarios() {
     let mut bad = Vec::new();
     for (id, kind, _, events) in scenarios()
@@ -673,8 +681,8 @@ fn apacks_download_blocker_real_lineage_and_no_wrapper_duplicate() {
         .any(|s| s == "download_pipe_shell"));
     assert_eq!(
         parent_outcome.confidence,
-        Confidence::None,
-        "wrapper is context, not a second alert"
+        Confidence::High,
+        "Pi d6731538: HTTP wrapper retains AML HIGH, sibling duplicate is suppressed"
     );
     let mut alerts = Vec::new();
     if parent_outcome.confidence != Confidence::None {
@@ -694,6 +702,10 @@ fn apacks_download_blocker_real_lineage_and_no_wrapper_duplicate() {
         }
     }
     assert_eq!(alerts.len(), 1, "one pipeline, one finding");
-    assert_eq!(alerts[0].confidence, Confidence::Medium);
-    assert_eq!(alerts[0].temporal_hits, vec!["phi_download_pipe_shell"]);
+    assert_eq!(alerts[0].confidence, Confidence::High);
+    assert!(alerts[0]
+        .exploit_indicators
+        .iter()
+        .any(|i| i == "fileless_pipe_exec"));
+    assert_eq!(engine.pipe_alert_suppressed_total(), 1);
 }

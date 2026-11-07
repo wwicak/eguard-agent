@@ -283,6 +283,10 @@ impl AgentRuntime {
         self.observe_baseline(&detection_event, now_unix);
 
         let mut detection_outcome = self.detection_state.process_event(&detection_event)?;
+        self.metrics.detection_pipe_alert_suppressed_total = self
+            .metrics
+            .detection_pipe_alert_suppressed_total
+            .saturating_add(u64::from(detection_outcome.pipe_alert_suppressed));
 
         // Buffer IOC signals for cross-endpoint campaign correlation.
         if detection_outcome.signals.z1_exact_ioc || detection_outcome.signals.yara_hit {

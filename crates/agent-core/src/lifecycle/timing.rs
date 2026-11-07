@@ -75,7 +75,8 @@ fn recommended_detection_shard_count(
     override_raw: Option<&str>,
 ) -> usize {
     const MAX_DETECTION_SHARDS: usize = 16;
-    const DEFAULT_DETECTION_SHARDS: usize = 2;
+    // RAFIX shared: immediate-parent sessions cannot split a causal lineage across engines.
+    const DEFAULT_DETECTION_SHARDS: usize = 1;
 
     if let Some(raw) = override_raw {
         if let Ok(value) = raw.trim().parse::<usize>() {

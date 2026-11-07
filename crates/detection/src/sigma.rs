@@ -215,7 +215,7 @@ fn compile_sequence_sigma_ast(doc: SigmaRuleDoc) -> Result<BoundedTemporalAst> {
 
         stages.push(AstStage {
             predicate: TemporalPredicate {
-// RAFIX shared: retain pack semantics alongside core grading and schema.
+                // RAFIX shared: retain pack semantics alongside core grading and schema.
                 sigma: Some(Arc::new(sequence_expr(&stage)?)),
                 event_class,
                 process_any_of: into_set(stage.process_any_of),
@@ -356,7 +356,9 @@ fn compile_legacy_sigma_ast(yaml: &str, doc: &SigmaRuleDoc) -> Result<BoundedTem
         ..Default::default()
     };
     Ok(BoundedTemporalAst {
-// RAFIX shared: retain pack semantics alongside core grading and schema.
+        // RAFIX shared: boolean compilation preserves declared runtime severity.
+        level: doc.level,
+        any_order: false,
         name: doc
             .title
             .clone()
@@ -430,7 +432,11 @@ fn compile_field(key: &str, value: &Value, event_class: EventClass) -> Result<Si
         let field = match field_name.to_ascii_lowercase().as_str() {
             "commandline" => SigmaField::CommandLine,
             "image" if event_class == EventClass::ProcessExec => SigmaField::ProcessPath,
-            "image" if mode == "endswith" && (pattern.starts_with('/') || pattern.starts_with('\\')) && !pattern[1..].contains(['/', '\\']) => {
+            "image"
+                if mode == "endswith"
+                    && (pattern.starts_with('/') || pattern.starts_with('\\'))
+                    && !pattern[1..].contains(['/', '\\']) =>
+            {
                 // On file/network events only the executable basename is available.
                 pattern = &pattern[1..];
                 mode = "exact";
