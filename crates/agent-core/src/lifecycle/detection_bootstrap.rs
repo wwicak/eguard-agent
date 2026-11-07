@@ -1621,7 +1621,17 @@ rule eguard_eicar_test {
         let base = unique_temp_dir("rafix-yara-seeds");
         std::fs::create_dir_all(&base).unwrap();
         let mut engine = detection::DetectionEngine::default_with_rules();
-        super::seed_yara_rules(&mut engine, &base.join("yara"));
+        let rules_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../rules/yara")
+            .canonicalize()
+            .expect("resolve shipped YARA rules");
+        // Avoid loading the same pack twice through the cwd-relative fallback.
+        let cwd = std::env::current_dir()
+            .expect("read test cwd")
+            .canonicalize()
+            .expect("canonicalize test cwd");
+        let configured_dir = rules_dir.strip_prefix(&cwd).unwrap_or(&rules_dir);
+        super::seed_yara_rules(&mut engine, configured_dir);
         let sample = base.join("sample.bin");
         std::fs::write(
             &sample,
