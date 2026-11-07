@@ -17,7 +17,7 @@ impl YaraBackend for ConcurrentBudgetSkip {
         }]
     }
 }
-fn colliding_verdict_result(rewrite: bool) {
+fn colliding_verdict_result(rewrite: bool, operator: bool) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("image");
     fs::write(&path, if rewrite { b"safe" } else { b"evil" }).unwrap();
@@ -46,12 +46,13 @@ fn colliding_verdict_result(rewrite: bool) {
     );
     let engine = Arc::new(engine);
     let worker = YaraWorker::new();
-    worker.submit(
-        engine.clone(),
-        Arc::new(AtomicBool::new(true)),
-        &event,
-        None,
-    );
+    let active = Arc::new(AtomicBool::new(true));
+    if operator {
+        let result = worker.scan_operator_event(&engine, active, &event);
+        worker.queue_operator_result(result);
+    } else {
+        worker.submit(engine.clone(), active, &event, None);
+    }
     worker.drain_for_tests();
     assert_eq!(
         engine.verdicts.lock().unwrap().len(),
@@ -69,9 +70,14 @@ fn colliding_verdict_result(rewrite: bool) {
 }
 #[test]
 fn result_digest_stays_paired_when_an_old_colliding_verdict_is_the_only_cache_entry() {
-    colliding_verdict_result(false);
+    colliding_verdict_result(false, false);
 }
 #[test]
 fn result_digest_matches_scanned_bytes_after_same_tick_same_mtime_rewrite() {
-    colliding_verdict_result(true);
+    colliding_verdict_result(true, false);
+}
+
+#[test]
+fn operator_result_digest_stays_paired_when_new_verdict_is_not_cached() {
+    colliding_verdict_result(true, true);
 }

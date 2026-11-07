@@ -41,6 +41,7 @@ pub struct YaraScanResult {
     pub pack_hash: String,
     pub sha256: String,
     pub scan_latency_ms: u64,
+    pub operator_scan: bool,
     active: Arc<AtomicBool>,
 }
 struct Request {
@@ -164,6 +165,7 @@ impl YaraWorker {
                             hits: verdict.hits,
                             incomplete,
                             active: request.active,
+                            operator_scan: false,
                         },
                     );
                 }
@@ -234,6 +236,7 @@ impl YaraWorker {
                     hits: verdict.hits,
                     incomplete: Vec::new(),
                     active,
+                    operator_scan: false,
                 },
             );
             return;
@@ -264,6 +267,34 @@ impl YaraWorker {
                 .fetch_max(depth.min(QUEUE_CAPACITY as u64), Ordering::Relaxed);
         }
     }
+    /// Explicit operator scans remain synchronous, but publish through the same alert buffer.
+    pub fn scan_operator_event(
+        &self,
+        engine: &YaraEngine,
+        active: Arc<AtomicBool>,
+        event: &TelemetryEvent,
+    ) -> YaraScanResult {
+        let started = Instant::now();
+        let mut scan = event.clone();
+        scan.file_write = true;
+        let verdict = engine.scan_file_event(&scan, None);
+        YaraScanResult {
+            event: event.clone(),
+            observation_id: None,
+            hits: verdict.hits,
+            incomplete: engine.take_incomplete(),
+            pack_hash: digest_hex(&engine.backend.pack_hash()),
+            sha256: digest_hex(&verdict.digest),
+            scan_latency_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            active,
+            operator_scan: true,
+        }
+    }
+
+    pub fn queue_operator_result(&self, result: YaraScanResult) {
+        emit(&self.inner.result_tx, &self.inner.counters, result);
+    }
+
     pub fn take_results(&self) -> Vec<YaraScanResult> {
         let mut out = Vec::new();
         for result in self

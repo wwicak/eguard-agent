@@ -50,6 +50,7 @@ impl AgentRuntime {
                 severity: severity.into(), rule_name: rule_name.clone(), created_at_unix: now_unix,
                 payload_json: json!({"observed_at_unix":now_unix,"event":event_json,
                     "observation_id":outcome.observation_id,"scan_latency_ms":result.scan_latency_ms,
+                    "scan_origin":if result.operator_scan { "operator" } else { "telemetry" },
                     "active_pack_hash":result.pack_hash,"scanned_sha256":result.sha256,
                     "alert_only":true,"auto_response":false,
                     "detection":{"confidence":super::confidence_label(confidence),"rule_type":"yara",

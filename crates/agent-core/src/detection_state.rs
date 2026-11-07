@@ -198,15 +198,17 @@ fn shard_worker_loop(
                 operator_scan,
                 response,
             } => {
-                let (hits, incomplete) = if operator_scan {
-                    let mut scan = (*event).clone();
-                    scan.file_write = true;
-                    (pack.scan_event(&scan), pack.take_incomplete())
+                let (hits, incomplete, operator_result) = if operator_scan {
+                    let result = yara_worker.scan_operator_event(&pack, active.clone(), &event);
+                    (result.hits.clone(), result.incomplete.clone(), Some(result))
                 } else {
-                    (Vec::new(), Vec::new())
+                    (Vec::new(), Vec::new(), None)
                 };
                 let outcome = engine.process_event_with_yara(&event, hits, incomplete);
-                if !operator_scan {
+                if let Some(mut result) = operator_result {
+                    result.observation_id = outcome.observation_id.clone();
+                    yara_worker.queue_operator_result(result);
+                } else {
                     yara_worker.submit(
                         pack.clone(),
                         active.clone(),
