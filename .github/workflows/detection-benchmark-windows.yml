@@ -126,6 +126,8 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -euo pipefail
+          # Base 86268317 predates the Windows test-target cfg gates of b9d913d; port only those (no base production change).
+          git diff b9d913d16337ed984afe2884d317fa7cf79405f2^ b9d913d16337ed984afe2884d317fa7cf79405f2 -- crates/agent-core | git apply -C2 --directory=qualification-yara/base-src
           (cd qualification-yara/base-src; cargo test --release -p agent-core full_agent_yara_idle_and_scan_burst_rss -- --ignored --nocapture --test-threads=1) | tee artifacts/yara-windows/baseline-rss.log
           cargo test --release -p agent-core full_agent_yara_idle_and_scan_burst_rss -- --ignored --nocapture --test-threads=1 | tee artifacts/yara-windows/head-rss.log
           python - <<'PY'
