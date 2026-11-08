@@ -11,15 +11,23 @@ use super::super::{
 };
 
 const CONTROL_PLANE_AWAIT_TIMEOUT_MS: u64 = 5_000;
+// Avoid paying another maintenance timeout on every tick while the server is unavailable.
+const MAINTENANCE_TRANSPORT_COOLDOWN_SECS: i64 = 30;
 
-async fn run_bounded_control_plane_future<F>(task_name: &'static str, fut: F)
+async fn run_bounded_control_plane_future<F>(task_name: &'static str, fut: F) -> bool
 where
     F: Future<Output = Result<()>>,
 {
-    match timeout(Duration::from_millis(CONTROL_PLANE_AWAIT_TIMEOUT_MS), fut).await {
-        Ok(Ok(())) => {}
+    let (result, transport_failed) = grpc_client::Client::with_single_attempt(timeout(
+        Duration::from_millis(CONTROL_PLANE_AWAIT_TIMEOUT_MS),
+        fut,
+    ))
+    .await;
+    match result {
+        Ok(Ok(())) => transport_failed,
         Ok(Err(err)) => {
             warn!(task = task_name, error = %err, "control-plane task failed");
+            transport_failed
         }
         Err(_) => {
             warn!(
@@ -27,23 +35,59 @@ where
                 timeout_ms = CONTROL_PLANE_AWAIT_TIMEOUT_MS,
                 "control-plane task timed out"
             );
+            true
         }
     }
 }
 
+impl ControlPlaneTaskKind {
+    fn is_bounded_maintenance(&self) -> bool {
+        matches!(
+            self,
+            Self::PolicySync
+                | Self::ThreatIntelRefresh
+                | Self::BaselineUpload
+                | Self::FleetBaselineFetch
+                | Self::IocSignalUpload
+                | Self::CampaignFetch
+        )
+    }
+}
+
 impl AgentRuntime {
+    pub(super) fn maintenance_transport_deferred(&self, now_unix: i64) -> bool {
+        self.maintenance_retry_after_unix
+            .is_some_and(|retry_after| {
+                retry_after > now_unix
+                    && retry_after <= now_unix.saturating_add(MAINTENANCE_TRANSPORT_COOLDOWN_SECS)
+            })
+    }
+
     pub(super) async fn execute_control_plane_task_budget(
         &mut self,
         now_unix: i64,
     ) -> Result<usize> {
         let mut executed = 0usize;
+        let initial_queue_len = self.pending_control_plane_tasks.len();
+        let mut queue_index = 0usize;
 
-        while executed < CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK {
-            let Some(task) = self.pending_control_plane_tasks.pop_front() else {
+        for _ in 0..initial_queue_len {
+            if executed >= CONTROL_PLANE_TASK_EXECUTION_BUDGET_PER_TICK {
+                break;
+            }
+            let Some(task) = self.pending_control_plane_tasks.get(queue_index) else {
                 break;
             };
+            if task.kind.is_bounded_maintenance() && self.maintenance_transport_deferred(now_unix) {
+                queue_index += 1;
+                continue;
+            }
+            let task = self
+                .pending_control_plane_tasks
+                .remove(queue_index)
+                .expect("queued task");
 
-            match task.kind {
+            let transport_failed = match task.kind {
                 ControlPlaneTaskKind::Heartbeat {
                     compliance_status,
                     baseline_status,
@@ -51,64 +95,69 @@ impl AgentRuntime {
                     let heartbeat_started = Instant::now();
                     self.send_heartbeat_if_due(now_unix, &compliance_status, &baseline_status);
                     self.metrics.last_heartbeat_micros = elapsed_micros(heartbeat_started);
+                    false
                 }
                 ControlPlaneTaskKind::Compliance { compliance } => {
                     let compliance_started = Instant::now();
                     self.send_compliance_if_due(now_unix, &compliance);
                     self.metrics.last_compliance_micros = elapsed_micros(compliance_started);
+                    false
                 }
                 ControlPlaneTaskKind::Inventory { inventory } => {
                     let inventory_started = Instant::now();
                     self.send_inventory_if_due(now_unix, inventory.as_ref());
                     self.metrics.last_inventory_micros = elapsed_micros(inventory_started);
+                    false
                 }
                 ControlPlaneTaskKind::PolicySync => {
                     run_bounded_control_plane_future(
                         "policy_sync",
                         self.refresh_policy_if_due(now_unix),
                     )
-                    .await;
+                    .await
                 }
                 ControlPlaneTaskKind::ThreatIntelRefresh => {
                     let threat_refresh_started = Instant::now();
-                    run_bounded_control_plane_future(
+                    let transport_failed = run_bounded_control_plane_future(
                         "threat_intel_refresh",
                         self.refresh_threat_intel_if_due(now_unix),
                     )
                     .await;
                     self.metrics.last_threat_intel_refresh_micros =
                         elapsed_micros(threat_refresh_started);
+                    transport_failed
                 }
                 ControlPlaneTaskKind::CommandSync => {
                     self.run_connected_command_stage(now_unix).await;
+                    false
                 }
                 ControlPlaneTaskKind::BaselineUpload => {
                     run_bounded_control_plane_future(
                         "baseline_upload",
                         self.upload_baseline_profiles_if_due(now_unix),
                     )
-                    .await;
+                    .await
                 }
                 ControlPlaneTaskKind::FleetBaselineFetch => {
                     run_bounded_control_plane_future(
                         "fleet_baseline_fetch",
                         self.fetch_and_apply_fleet_baselines_if_due(now_unix),
                     )
-                    .await;
+                    .await
                 }
                 ControlPlaneTaskKind::IocSignalUpload => {
                     run_bounded_control_plane_future(
                         "ioc_signal_upload",
                         self.upload_ioc_signals_if_due(now_unix),
                     )
-                    .await;
+                    .await
                 }
                 ControlPlaneTaskKind::CampaignFetch => {
                     run_bounded_control_plane_future(
                         "campaign_fetch",
                         self.fetch_and_apply_campaigns_if_due(now_unix),
                     )
-                    .await;
+                    .await
                 }
                 ControlPlaneTaskKind::FimUpload
                 | ControlPlaneTaskKind::UsbUpload
@@ -118,7 +167,12 @@ impl AgentRuntime {
                 | ControlPlaneTaskKind::ZeroTrustUpload => {
                     // Placeholder — feature upload handlers will be wired in
                     // when the corresponding scan/detection loops are implemented.
+                    false
                 }
+            };
+            if transport_failed {
+                self.maintenance_retry_after_unix =
+                    Some(now_unix.saturating_add(MAINTENANCE_TRANSPORT_COOLDOWN_SECS));
             }
 
             executed = executed.saturating_add(1);

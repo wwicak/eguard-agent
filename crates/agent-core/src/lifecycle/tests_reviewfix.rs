@@ -227,7 +227,13 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
     assert_eq!(runtime.buffer.pending_count(), 0);
     assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now + 1));
-    assert_eq!(runtime.last_threat_intel_refresh_unix, Some(now + 1));
+    assert_eq!(runtime.last_threat_intel_refresh_unix, None);
+    assert!(runtime
+        .pending_control_plane_tasks
+        .iter()
+        .any(|task| { matches!(task.kind, ControlPlaneTaskKind::ThreatIntelRefresh) }));
+    // MAINTENANCE_TRANSPORT_COOLDOWN_SECS: 127.0.0.1:1 refuses policy_sync.
+    assert_eq!(runtime.maintenance_retry_after_unix, Some(now + 1 + 30));
 }
 
 #[tokio::test]
@@ -563,7 +569,13 @@ async fn fresh_compliance_alert_drains_remaining_old_rows_before_scheduling() {
     );
     assert_eq!(runtime.buffer.pending_count(), 0);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now));
-    assert_eq!(runtime.last_threat_intel_refresh_unix, Some(now));
+    assert_eq!(runtime.last_threat_intel_refresh_unix, None);
+    assert!(runtime
+        .pending_control_plane_tasks
+        .iter()
+        .any(|task| { matches!(task.kind, ControlPlaneTaskKind::ThreatIntelRefresh) }));
+    // MAINTENANCE_TRANSPORT_COOLDOWN_SECS: 127.0.0.1:1 refuses policy_sync.
+    assert_eq!(runtime.maintenance_retry_after_unix, Some(now + 30));
 }
 
 #[tokio::test]

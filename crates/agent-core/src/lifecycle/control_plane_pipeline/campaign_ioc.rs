@@ -43,7 +43,8 @@ impl AgentRuntime {
         }
         self.last_ioc_signal_upload_unix = Some(now_unix);
 
-        let signals = std::mem::take(&mut self.ioc_signal_buffer);
+        // Keep the bounded batch until ACK, including cancellation of this &mut self future.
+        let signals = self.ioc_signal_buffer.clone();
         if signals.is_empty() {
             return Ok(());
         }
@@ -54,6 +55,7 @@ impl AgentRuntime {
         };
 
         self.client.send_ioc_signals(&batch).await?;
+        self.ioc_signal_buffer.clear();
         info!(
             agent_id = %self.config.agent_id,
             signal_count = batch.signals.len(),
