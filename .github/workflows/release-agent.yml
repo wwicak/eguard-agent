@@ -373,7 +373,7 @@ jobs:
 
   release:
     needs: [linux, windows, macos]
-    if: always() && needs.linux.result == 'success'
+    if: always() && github.event_name == 'push' && needs.linux.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
