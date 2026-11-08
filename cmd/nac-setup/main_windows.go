@@ -5,6 +5,7 @@
 //
 //	nac-setup install <service.exe> <bootstrap.json> <activation.json>
 //	nac-setup install-code <service.exe> <enrollment code>   (self-service)
+//	nac-setup install-from-name <service.exe> <installer-filename>
 //	nac-setup uninstall [authorization.json | /TOKEN=<token>]   (ON requires signed authorization)
 //	nac-setup enroll  <bootstrap.json> <activation.json>   (provisioning only; tests)
 package main
@@ -17,6 +18,7 @@ import (
 
 	"eguard-nac-agent/admission"
 	"eguard-nac-agent/provision"
+	"eguard-nac-agent/selfenroll"
 	"eguard-nac-agent/setupflow"
 	"eguard-nac-agent/uninstall"
 	"golang.org/x/sys/windows"
@@ -36,12 +38,21 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("eGuard NAC installed, enrolled and running.")
-	case len(os.Args) == 4 && os.Args[1] == "install-code":
+	case len(os.Args) == 4 && (os.Args[1] == "install-code" || os.Args[1] == "install-from-name"):
 		if !elevated() {
 			fmt.Fprintln(os.Stderr, "Administrator rights are required.")
 			os.Exit(5)
 		}
-		if e := installWithCode(os.Args[2], os.Args[3]); e != nil {
+		code := os.Args[3]
+		if os.Args[1] == "install-from-name" {
+			var ok bool
+			code, ok = selfenroll.CodeFromInstallerName(code)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "Installer filename has no valid enrollment code.")
+				os.Exit(2)
+			}
+		}
+		if e := installWithCode(os.Args[2], code); e != nil {
 			fmt.Fprintln(os.Stderr, "Installation failed and was rolled back:", e)
 			os.Exit(1)
 		}
@@ -90,6 +101,8 @@ func main() {
 		fmt.Println("eGuard NAC removed. Files in use are deleted at next restart.")
 	default:
 		fmt.Fprintln(os.Stderr, "usage: nac-setup install <service.exe> <bootstrap.json> <activation.json>")
+		fmt.Fprintln(os.Stderr, "       nac-setup install-code <service.exe> <enrollment code>")
+		fmt.Fprintln(os.Stderr, "       nac-setup install-from-name <service.exe> <installer-filename>")
 		os.Exit(2)
 	}
 }
