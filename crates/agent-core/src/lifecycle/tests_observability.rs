@@ -895,6 +895,10 @@ async fn observability_snapshot_reports_bounded_command_backlog_progress() {
     runtime.last_threat_intel_refresh_unix = Some(1_700_000_200);
     runtime.last_inventory_attempt_unix = Some(1_700_000_200);
     runtime.last_policy_fetch_unix = Some(1_700_000_200);
+    // Isolate command backlog progress from unrelated maintenance transport failures.
+    runtime.last_baseline_upload_unix = Some(1_700_000_200);
+    runtime.last_fleet_baseline_fetch_unix = Some(1_700_000_200);
+    runtime.last_campaign_fetch_unix = Some(1_700_000_200);
 
     for i in 0..10 {
         runtime

@@ -10,6 +10,100 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status};
 
+#[tokio::test]
+async fn cpstall_single_attempt_reports_retryable_failure_without_sleep() {
+    let client = Client::new("127.0.0.1:1".into());
+    let attempts = AtomicUsize::new(0);
+    let started = std::time::Instant::now();
+    let (result, failed) = Client::with_single_attempt(client.with_retry("maintenance", || {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        async { Err::<(), _>(anyhow::anyhow!(Status::unavailable("down"))) }
+    }))
+    .await;
+    assert!(result.is_err());
+    assert!(failed);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(
+        client.retry_policy().max_attempts,
+        RetryPolicy::default().max_attempts
+    );
+}
+
+#[tokio::test]
+async fn cpstall_single_attempt_last_success_clears_failure() {
+    let client = Client::new("127.0.0.1:1".into());
+    let ((), failed) = Client::with_single_attempt(async {
+        let _ = client
+            .with_retry("grpc_failure", || async {
+                Err::<(), _>(anyhow::anyhow!(Status::unavailable("down")))
+            })
+            .await;
+        client
+            .with_retry("http_fallback", || async { Ok(()) })
+            .await
+            .unwrap();
+    })
+    .await;
+    assert!(!failed, "successful fallback must clear transport failure");
+}
+
+#[tokio::test]
+async fn cpstall_single_attempt_last_nonretryable_error_clears_failure() {
+    let client = Client::new("127.0.0.1:1".into());
+    let ((), failed) = Client::with_single_attempt(async {
+        let _ = client
+            .with_retry("first", || async {
+                Err::<(), _>(anyhow::anyhow!(Status::unavailable("down")))
+            })
+            .await;
+        let _ = client
+            .with_retry("last", || async {
+                Err::<(), _>(anyhow::anyhow!(Status::invalid_argument("invalid")))
+            })
+            .await;
+    })
+    .await;
+    assert!(!failed);
+}
+
+#[tokio::test]
+async fn cpstall_single_attempt_does_not_leak_outside_or_into_spawned_tasks() {
+    async fn count_attempts() -> usize {
+        let mut client = Client::new("127.0.0.1:1".into());
+        client.retry.min_backoff = Duration::ZERO;
+        client.retry.max_backoff = Duration::ZERO;
+        let attempts = AtomicUsize::new(0);
+        let _ = client
+            .with_retry("default", || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err::<(), _>(anyhow::anyhow!(Status::unavailable("down"))) }
+            })
+            .await;
+        attempts.load(Ordering::SeqCst)
+    }
+    let (spawned_attempts, failed) =
+        Client::with_single_attempt(async { tokio::spawn(count_attempts()).await.unwrap() }).await;
+    assert_eq!(
+        spawned_attempts,
+        RetryPolicy::default().max_attempts as usize
+    );
+    assert!(!failed, "spawned worker must not set its parent's outcome");
+    assert_eq!(
+        count_attempts().await,
+        RetryPolicy::default().max_attempts as usize
+    );
+    let _ = tokio::time::timeout(
+        Duration::from_millis(1),
+        Client::with_single_attempt(std::future::pending::<()>()),
+    )
+    .await;
+    assert_eq!(
+        count_attempts().await,
+        RetryPolicy::default().max_attempts as usize
+    );
+}
+
 const TEST_TLS_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUNW78K5A0KsY4c5O6JVr75ReDAnIwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDIyMDA2NTMwNloXDTI2MDIy

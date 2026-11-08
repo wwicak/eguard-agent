@@ -68,7 +68,9 @@ impl AgentRuntime {
             );
         }
 
-        if !self.should_defer_maintenance_control_plane_work() {
+        if !self.should_defer_maintenance_control_plane_work()
+            && !self.maintenance_transport_deferred(now_unix)
+        {
             if self.policy_refresh_due(now_unix) {
                 self.try_enqueue_control_plane_task(ControlPlaneTaskKind::PolicySync, now_unix);
             }

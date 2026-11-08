@@ -39,6 +39,10 @@ const TLS_CA_PIN_PATH_ENV: &str = "EGUARD_TLS_CA_PIN_PATH";
 const TLS_BOOTSTRAP_PIN_ON_FIRST_USE_ENV: &str = "EGUARD_TLS_BOOTSTRAP_PIN_ON_FIRST_USE";
 const ALLOW_EXTERNAL_BUNDLE_URLS_ENV: &str = "EGUARD_ALLOW_EXTERNAL_BUNDLE_URLS";
 
+tokio::task_local! {
+    static SINGLE_ATTEMPT_TRANSPORT_FAILED: std::cell::Cell<bool>;
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     server_addr: String,
@@ -128,6 +132,18 @@ impl Client {
 
     pub fn retry_policy(&self) -> &RetryPolicy {
         &self.retry
+    }
+
+    /// Bound maintenance to one attempt per transport, without affecting spawned workers.
+    /// The final transport outcome wins, including successful protocol fallbacks.
+    pub async fn with_single_attempt<F: Future>(future: F) -> (F::Output, bool) {
+        SINGLE_ATTEMPT_TRANSPORT_FAILED
+            .scope(std::cell::Cell::new(false), async move {
+                let result = future.await;
+                let failed = SINGLE_ATTEMPT_TRANSPORT_FAILED.with(std::cell::Cell::get);
+                (result, failed)
+            })
+            .await
     }
 
     pub async fn send_events(&self, batch: &[EventEnvelope]) -> Result<()> {
@@ -884,9 +900,16 @@ impl Client {
         let mut attempt = 1u32;
         loop {
             match op().await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    let _ = SINGLE_ATTEMPT_TRANSPORT_FAILED.try_with(|failed| failed.set(false));
+                    return Ok(result);
+                }
                 Err(err) => {
-                    if !is_retryable_transport_error(&err) {
+                    let retryable = is_retryable_transport_error(&err);
+                    let single_attempt = SINGLE_ATTEMPT_TRANSPORT_FAILED
+                        .try_with(|failed| failed.set(retryable))
+                        .is_ok();
+                    if !retryable {
                         return Err(err).with_context(|| {
                             format!(
                                 "operation {} failed with non-retryable error on attempt {}",
@@ -904,7 +927,7 @@ impl Client {
                         self.invalidate_channel_cache();
                     }
 
-                    if attempt >= self.retry.max_attempts {
+                    if single_attempt || attempt >= self.retry.max_attempts {
                         return Err(err).with_context(|| {
                             format!(
                                 "operation {} failed after {} attempts",
