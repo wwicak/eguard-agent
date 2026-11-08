@@ -119,6 +119,10 @@ func Redeem(endpoint string, roots *x509.CertPool, code string, csrPEM []byte, h
 	case 200:
 	case 403:
 		return zero, ErrCode
+	case 409:
+		return zero, errors.New("the guest device limit on this network is reached; try again later or ask the network administrator")
+	case 429:
+		return zero, errors.New("too many enrollment attempts from this network; wait a while and try again")
 	default:
 		return zero, fmt.Errorf("enrollment server returned HTTP %d", resp.StatusCode)
 	}
