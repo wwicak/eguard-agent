@@ -128,6 +128,10 @@ impl AgentRuntime {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "stall_tests.rs"]
+mod stall_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
