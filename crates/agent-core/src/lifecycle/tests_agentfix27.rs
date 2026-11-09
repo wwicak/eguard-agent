@@ -5,6 +5,12 @@ fn engine() -> DetectionEngine {
     let mut e = DetectionEngine::default_with_rules();
     seed_kill_chain_templates(&mut e);
     seed_sigma_rules(&mut e, std::path::Path::new("rules/sigma"));
+    for yaml in [
+        include_str!("../../../../rules/sigma/linux_data_staging_archive.yml"),
+        include_str!("../../../../rules/sigma/linux_download_exec.yml"),
+    ] {
+        e.load_sigma_rule_yaml(yaml).unwrap();
+    }
     e
 }
 
