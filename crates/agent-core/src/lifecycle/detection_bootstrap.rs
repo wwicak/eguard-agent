@@ -1664,6 +1664,83 @@ rule eguard_custom_dir_test {
         events
     }
 
+    fn agentfix28_system_file_network_replay(path: &str, delay: i64) -> usize {
+        let mut engine = detp1_engine("198.51.100.20:50053");
+        let mut read = detp1_fixture_event(4, 0, 1, EventClass::FileOpen, "System", "");
+        read.uid = 0;
+        read.file_path = Some(path.into());
+        let mut network = read.clone();
+        network.ts_unix += delay;
+        network.event_class = EventClass::NetworkConnect;
+        network.file_path = None;
+        network.dst_ip = Some("10.102.1.255".into());
+        network.dst_port = Some(137);
+        detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil")
+    }
+
+    #[test]
+    fn agentfix28_replay_cryptnet_systemprofile_does_not_exfil() {
+        assert_eq!(
+            agentfix28_system_file_network_replay(
+                r"C:\Windows\System32\config\systemprofile\AppData\LocalLow\Microsoft\CryptnetUrlCache\Content\26C212D9399727259664BDFCA073966E_912C3CA51DE6018A7BE4CA7BC64AAFCD",
+                54
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn agentfix28_replay_office_systemprofile_does_not_exfil() {
+        assert_eq!(
+            agentfix28_system_file_network_replay(
+                r"C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Office\OTele\{BD5D4451-383D-47AE-8C81-6F717964EE12} (4) - 4720 - officeclicktorun.exe - OTele.dat",
+                34
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn agentfix28_replay_system_sam_still_exfils_to_broadcast() {
+        assert_eq!(
+            agentfix28_system_file_network_replay(r"C:\Windows\System32\config\SAM", 54),
+            1
+        );
+    }
+
+    #[test]
+    #[ignore = "AGENTFIX28 analysis only: Linux cron/own-server policy is not ruled"]
+    fn agentfix28_analysis_linux_cron_shadow_child_to_own_server() {
+        let mut read = detp1_fixture_event(2000, 1, 1, EventClass::FileOpen, "cron", "systemd");
+        read.uid = 0;
+        read.file_path = Some("/etc/shadow".into());
+        let mut network =
+            detp1_fixture_event(2001, 2000, 35, EventClass::NetworkConnect, "sh", "cron");
+        network.uid = 0;
+        network.dst_ip = Some("10.10.123.35".into());
+        network.dst_port = Some(50053);
+        let mut engine = detp1_engine("10.10.123.35:50053");
+        assert_eq!(
+            detp1_replay_count(
+                &mut engine,
+                &[read.clone(), network.clone()],
+                "phi_credential_exfil"
+            ),
+            0,
+            "FileOpen-to-network correlation requires the same PID, not a child"
+        );
+        // Control: the configured peer is tagged, but L2 does not exempt it.
+        network.pid = read.pid;
+        network.ppid = read.ppid;
+        network.process = read.process.clone();
+        network.parent_process = read.parent_process.clone();
+        let mut engine = detp1_engine("10.10.123.35:50053");
+        assert_eq!(
+            detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil"),
+            1
+        );
+    }
+
     #[test]
     fn detp1_phase0_replay_anonymized_groups_and_malicious_lookalikes() {
         // Five historical group shapes, not reconstructed customer commands or event IDs.

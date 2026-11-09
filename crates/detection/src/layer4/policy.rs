@@ -392,6 +392,74 @@ pub(super) fn path_root_prefix(path: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn assert_systemprofile_is_not_credential_source(path: &str) {
+        let nt_path = path.replacen("C:", r"\Device\HarddiskVolume3", 1);
+        for path in [path.to_string(), nt_path] {
+            for variant in [
+                path.clone(),
+                path.to_ascii_lowercase(),
+                path.to_ascii_uppercase(),
+            ] {
+                assert!(!is_sensitive_credential_path(&variant), "{variant}");
+                assert!(!is_credential_source(&variant), "{variant}");
+            }
+        }
+    }
+
+    #[test]
+    fn agentfix28_cryptnet_systemprofile_is_not_credential_source() {
+        assert_systemprofile_is_not_credential_source(
+            r"C:\Windows\System32\config\systemprofile\AppData\LocalLow\Microsoft\CryptnetUrlCache\Content\26C212D9399727259664BDFCA073966E_912C3CA51DE6018A7BE4CA7BC64AAFCD",
+        );
+    }
+
+    #[test]
+    fn agentfix28_office_systemprofile_is_not_credential_source() {
+        assert_systemprofile_is_not_credential_source(
+            r"C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Office\OTele\{BD5D4451-383D-47AE-8C81-6F717964EE12} (4) - 4720 - officeclicktorun.exe - OTele.dat",
+        );
+    }
+
+    #[test]
+    fn agentfix28_hive_files_and_known_siblings_remain_credential_sources() {
+        for root in [
+            r"C:\Windows\System32\config",
+            r"\Device\HarddiskVolume3\Windows\System32\config",
+        ] {
+            for hive in ["SAM", "SECURITY", "SYSTEM", r"RegBack\SAM"] {
+                for suffix in ["", ".LOG", ".LOG1", ".LOG2", ".sav", ".alt"] {
+                    let path = format!(r"{root}\{hive}{suffix}");
+                    for variant in [
+                        path.clone(),
+                        path.to_ascii_lowercase(),
+                        path.replace('\\', "/"),
+                    ] {
+                        assert!(is_sensitive_credential_path(&variant), "{variant}");
+                        assert!(is_credential_source(&variant), "{variant}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn agentfix28_hive_prefix_lookalikes_are_not_credential_sources() {
+        for name in [
+            "samurai",
+            "securitytools",
+            "systemprofile",
+            r"RegBack\samples",
+            "SAM.LOG10",
+            "SYSTEM.savx",
+            "SECURITY.txt",
+            r"SAM\child",
+        ] {
+            let path = format!(r"C:\Windows\System32\config\{name}");
+            assert!(!is_sensitive_credential_path(&path), "{path}");
+            assert!(!is_credential_source(&path), "{path}");
+        }
+    }
+
     #[test]
     fn expected_auth_stack_allows_macos_directory_services_access() {
         assert!(is_expected_auth_stack_access(
