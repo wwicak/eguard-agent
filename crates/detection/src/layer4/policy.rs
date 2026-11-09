@@ -92,8 +92,9 @@ pub(super) fn is_sensitive_credential_path(path: &str) -> bool {
     }
 
     let windows_hive = lower
-        .split_once("/windows/system32/config/")
+        .rsplit_once("/windows/system32/config/")
         .is_some_and(|(_, name)| {
+            let name = name.split(':').next().unwrap_or(name);
             let name = name.strip_prefix("regback/").unwrap_or(name);
             let hive = [".log", ".log1", ".log2", ".sav", ".alt"]
                 .into_iter()
