@@ -989,6 +989,10 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
 }
 
 #[cfg(test)]
+#[path = "tests_agentfix27.rs"]
+mod tests_agentfix27;
+
+#[cfg(test)]
 mod tests {
     use super::{
         build_detection_engine_with_ransomware_policy, configured_or_fallback_dirs,

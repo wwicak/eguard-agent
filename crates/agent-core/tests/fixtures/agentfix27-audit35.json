@@ -1,0 +1,296 @@
+[
+  {
+    "id": 14281782,
+    "rule_name": "phi_download_exec",
+    "event": {
+      "command_line": "sh -c touch /var/log/qemu-ga.log",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/bin/sh",
+      "file_write": false,
+      "parent_process": "qemu-ga",
+      "pid": 1768097,
+      "ppid": 1005,
+      "process": "sh",
+      "session_id": 1,
+      "ts_unix": 1793997826,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14281986,
+    "rule_name": "linux_data_staging_archive",
+    "event": {
+      "command_line": "tar -df alternatives.tar.0 -C /var/lib/dpkg alternatives",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/usr/bin/tar",
+      "file_write": false,
+      "parent_process": "dpkg-db-backup",
+      "pid": 1906856,
+      "ppid": 1906773,
+      "process": "tar",
+      "session_id": 1906773,
+      "ts_unix": 1794009601,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14282058,
+    "rule_name": "killchain_reverse_shell",
+    "event": {
+      "command_line": "python3 /usr/sbin/qemu-ga_check.py",
+      "dst_ip": "10.10.123.35",
+      "dst_port": 50053,
+      "event_class": "NetworkConnect",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "sh",
+      "pid": 1940847,
+      "ppid": 1940846,
+      "process": "python3",
+      "session_id": 1940846,
+      "ts_unix": 1794012481,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14282385,
+    "rule_name": "phi_download_exec",
+    "event": {
+      "command_line": "sh -c command -v python >/dev/null",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/bin/sh",
+      "file_write": false,
+      "parent_process": "qemu-ga",
+      "pid": 2067566,
+      "ppid": 1005,
+      "process": "sh",
+      "session_id": 1,
+      "ts_unix": 1794023169,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14284872,
+    "rule_name": "phi_download_exec",
+    "event": {
+      "command_line": "/bin/sh -c    python3 /usr/sbin/qemu-ga_check.py",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/bin/sh",
+      "file_write": false,
+      "parent_process": "cron",
+      "pid": 2690423,
+      "ppid": 2690421,
+      "process": "dash",
+      "session_id": 1,
+      "ts_unix": 1794075841,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14284995,
+    "rule_name": "killchain_reverse_shell",
+    "event": {
+      "command_line": "python3 /usr/sbin/qemu-ga_check.py",
+      "dst_ip": "10.10.123.35",
+      "dst_port": 50053,
+      "event_class": "NetworkConnect",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "sh",
+      "pid": 2834743,
+      "ppid": 2834742,
+      "process": "python3",
+      "session_id": 2834742,
+      "ts_unix": 1794088081,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285100,
+    "rule_name": "linux_data_staging_archive",
+    "event": {
+      "command_line": "tar -df alternatives.tar.0 -C /var/lib/dpkg alternatives",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/usr/bin/tar",
+      "file_write": false,
+      "parent_process": "dpkg-db-backup",
+      "pid": 2928508,
+      "ppid": 2928497,
+      "process": "tar",
+      "session_id": 2928497,
+      "ts_unix": 1794096001,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285523,
+    "rule_name": "phi_download_exec",
+    "event": {
+      "command_line": "sh -c command -v python >/dev/null",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/bin/sh",
+      "file_write": false,
+      "parent_process": "qemu-ga",
+      "pid": 3314441,
+      "ppid": 1005,
+      "process": "sh",
+      "session_id": 1,
+      "ts_unix": 1794128710,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285643,
+    "rule_name": "killchain_reverse_shell",
+    "event": {
+      "command_line": "python3 -c import subprocess",
+      "dst_ip": "10.10.123.35",
+      "dst_port": 50053,
+      "event_class": "NetworkConnect",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "sh",
+      "pid": 3454175,
+      "ppid": 3454173,
+      "process": "python3",
+      "session_id": 3454173,
+      "ts_unix": 1794140593,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285664,
+    "rule_name": "killchain_reverse_shell",
+    "event": {
+      "command_line": "python3 -c import subprocess",
+      "dst_ip": "10.10.123.35",
+      "dst_port": 50053,
+      "event_class": "NetworkConnect",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "sh",
+      "pid": 3507607,
+      "ppid": 3507605,
+      "process": "python3",
+      "session_id": 3507605,
+      "ts_unix": 1794145093,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285676,
+    "rule_name": "killchain_reverse_shell",
+    "event": {
+      "command_line": "python3 -c import string",
+      "dst_ip": "10.10.123.35",
+      "dst_port": 50053,
+      "event_class": "NetworkConnect",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "sh",
+      "pid": 3548680,
+      "ppid": 3548678,
+      "process": "python3.14",
+      "session_id": 1,
+      "ts_unix": 1794148570,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285709,
+    "rule_name": "phi_download_exec",
+    "event": {
+      "command_line": "sh -c touch /var/log/qemu-ga.log",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/bin/sh",
+      "file_write": false,
+      "parent_process": "qemu-ga",
+      "pid": 3645313,
+      "ppid": 1005,
+      "process": "sh",
+      "session_id": 1,
+      "ts_unix": 1794156766,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285799,
+    "rule_name": "killchain_reverse_shell",
+    "event": {
+      "command_line": "python3 -c import string",
+      "dst_ip": "10.10.123.35",
+      "dst_port": 50053,
+      "event_class": "NetworkConnect",
+      "file_path": null,
+      "file_write": false,
+      "parent_process": "sh",
+      "pid": 3663509,
+      "ppid": 3663507,
+      "process": "python3",
+      "session_id": 3663507,
+      "ts_unix": 1794158293,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  },
+  {
+    "id": 14285961,
+    "rule_name": "linux_data_staging_archive",
+    "event": {
+      "command_line": "tar -df alternatives.tar.0 -C /var/lib/dpkg alternatives",
+      "dst_ip": null,
+      "dst_port": null,
+      "event_class": "ProcessExec",
+      "file_path": "/usr/bin/tar",
+      "file_write": false,
+      "parent_process": "dpkg-db-backup",
+      "pid": 3948085,
+      "ppid": 3948071,
+      "process": "tar",
+      "session_id": 3948071,
+      "ts_unix": 1794182401,
+      "uid": 0,
+      "container_escape": false,
+      "container_privileged": false
+    }
+  }
+]
