@@ -85,6 +85,8 @@ mod tests;
 #[cfg(test)]
 mod tests_agentfix27;
 #[cfg(test)]
+mod tests_cron27;
+#[cfg(test)]
 mod tests_windows_fp;
 #[cfg(test)]
 mod tests_detection_audit;
