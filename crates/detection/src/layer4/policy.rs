@@ -91,12 +91,18 @@ pub(super) fn is_sensitive_credential_path(path: &str) -> bool {
         return true;
     }
 
-    if lower.contains("/windows/system32/config/sam")
-        || lower.contains("/windows/system32/config/security")
-        || lower.contains("/windows/system32/config/system")
-        || lower.contains("/windows/system32/config/regback/sam")
-        || lower.contains("/windows/ntds/ntds.dit")
-        || lower.contains("/ntds/ntds.dit")
+    let windows_hive = lower
+        .split_once("/windows/system32/config/")
+        .is_some_and(|(_, name)| {
+            let name = name.strip_prefix("regback/").unwrap_or(name);
+            let hive = [".log", ".log1", ".log2", ".sav", ".alt"]
+                .into_iter()
+                .find_map(|suffix| name.strip_suffix(suffix))
+                .unwrap_or(name);
+            matches!(hive, "sam" | "security" | "system")
+        });
+
+    if windows_hive || lower.contains("/windows/ntds/ntds.dit") || lower.contains("/ntds/ntds.dit")
     {
         return true;
     }
