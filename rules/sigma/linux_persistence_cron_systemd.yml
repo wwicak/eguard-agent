@@ -14,8 +14,5 @@ detection:
       process_any_of:
         - crontab
         - systemctl
-      command_line_contains:
-        - enable
-        - --user
-        - /etc/cron.
+      command_line_contains: [systemctl enable, systemctl reenable, --user enable, --user reenable, --now enable, -q enable, --quiet enable, --global enable, --system enable, -f enable, --force enable, /etc/cron.]
       within_secs: 30
