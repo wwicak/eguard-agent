@@ -17,7 +17,14 @@ detection:
         - gzip
         - 7z
       command_line_contains:
-        - /etc/
-        - /home/
-        - /var/
+        - /home
+        - /.ssh
+        - /etc/shadow
+        - /etc/gshadow
+        - /.aws/credentials
+        - /.gnupg
+        - /.kube/config
+        - /etc/ssl/private
+        - /.password-store
+        - /.docker/config.json
       within_secs: 30

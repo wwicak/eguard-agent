@@ -417,8 +417,12 @@ impl Layer4Engine {
                 continue;
             }
             for pid in &candidate_roots {
-                if let Some(mut witnesses) = self.match_from(*pid, template, 0, 0, None, event.pid)
-                {
+                let matched = if template.name == "killchain_reverse_shell" {
+                    self.reverse_shell_witnesses(event, template.max_inter_stage_secs)
+                } else {
+                    self.match_from(*pid, template, 0, 0, None, event.pid)
+                };
+                if let Some(mut witnesses) = matched {
                     if self.graph.mark_fired(
                         event.pid,
                         &template.name,
@@ -442,6 +446,33 @@ impl Layer4Engine {
         }
 
         hits
+    }
+
+    fn reverse_shell_witnesses(
+        &self,
+        event: &TelemetryEvent,
+        window: i64,
+    ) -> Option<Vec<KillChainWitness>> {
+        if event.event_class != crate::EventClass::NetworkConnect {
+            return None;
+        }
+        let node = self.graph.node(event.pid)?;
+        let stdio = node.signal_witnesses.get("socket_stdio")?;
+        let network = node.signal_witnesses.get("network")?;
+        // No ancestor command, non-web port, or shared session can substitute for shell I/O.
+        if stdio.process != event.process
+            || stdio.exec_generation != network.exec_generation
+            || stdio.ts_unix > event.ts_unix
+            || event.ts_unix.saturating_sub(stdio.ts_unix) > window
+            || network.event_id != self.graph.current_event_id
+        {
+            return None;
+        }
+        Some(vec![
+            stdio.clone(),
+            network.clone(),
+            node.identity_witness.clone(),
+        ])
     }
 
     pub fn eviction_counters(&self) -> Layer4EvictionCounters {

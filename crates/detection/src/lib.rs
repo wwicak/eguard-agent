@@ -4,6 +4,7 @@ pub mod behavioral;
 mod bench_detection;
 mod calibration;
 pub mod deception;
+mod command_evidence;
 mod engine;
 mod exploit;
 pub mod fim;
@@ -45,7 +46,8 @@ pub use kernel_integrity::detect_kernel_integrity_indicators;
 pub use lateral_movement::{LateralMovementAlert, LateralMovementDetector, LateralTechnique};
 pub use layer1::{IocExactStore, IocLayer1, Layer1EventHit, Layer1Result};
 pub use layer2::{
-    TemporalEngine, TemporalEvictionCounters, TemporalPredicate, TemporalRule, TemporalStage,
+    TemporalEngine, TemporalEvictionCounters, TemporalEvidence, TemporalPredicate, TemporalRule,
+    TemporalStage, TemporalWitness,
 };
 pub use layer3::{AnomalyConfig, AnomalyDecision, AnomalyEngine};
 pub use layer4::{
@@ -80,6 +82,8 @@ pub use zero_trust::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_agentfix27;
 #[cfg(test)]
 mod tests_windows_fp;
 #[cfg(test)]
