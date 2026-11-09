@@ -384,6 +384,7 @@ mod tests {
             temporal_hits: Vec::new(),
             kill_chain_hits: Vec::new(),
             kill_chain_evidence: Vec::new(),
+            temporal_evidence: Vec::new(),
             observation_id: None,
             peer_is_configured_server: false,
             exploit_indicators: Vec::new(),

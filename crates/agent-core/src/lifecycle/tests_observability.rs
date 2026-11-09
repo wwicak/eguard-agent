@@ -62,6 +62,7 @@ fn tick_evaluation_for_confidence(confidence: Confidence, ts: i64, pid: u32) -> 
             temporal_hits: Vec::new(),
             kill_chain_hits: Vec::new(),
             kill_chain_evidence: Vec::new(),
+            temporal_evidence: Vec::new(),
             observation_id: None,
             peer_is_configured_server: false,
             exploit_indicators: Vec::new(),
@@ -179,6 +180,7 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         temporal_hits: Vec::new(),
         kill_chain_hits: Vec::new(),
         kill_chain_evidence: Vec::new(),
+        temporal_evidence: Vec::new(),
         observation_id: None,
         peer_is_configured_server: false,
         exploit_indicators: vec!["fileless_memfd".to_string()],
@@ -220,6 +222,45 @@ fn telemetry_audit_payload_includes_rule_attribution() {
         .unwrap()
         .iter()
         .any(|v| v == "fileless_memfd"));
+    assert!(value["detection"].get("temporal_evidence").is_none());
+
+    let mut temporal = detection::TemporalEngine::with_default_rules();
+    let mut download = event.clone();
+    download.pid = 100;
+    download.ppid = 10;
+    download.process = "curl".into();
+    download.command_line = Some("curl https://example.test/x".into());
+    temporal.observe(&download);
+    let mut shell = download.clone();
+    shell.pid = 101;
+    shell.ts_unix += 1;
+    shell.process = "sh".into();
+    shell.command_line = Some("sh".into());
+    temporal.observe(&shell);
+    let mut outcome = outcome;
+    outcome.temporal_evidence = temporal.last_evidence().to_vec();
+    assert!(!outcome.temporal_evidence.is_empty());
+    let payload = runtime.telemetry_payload_json(
+        &enriched,
+        &shell,
+        &outcome,
+        &event_txn,
+        detection::Confidence::High,
+        10,
+    );
+    let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(
+        payload["audit"]["temporal_evidence"],
+        payload["detection"]["temporal_evidence"]
+    );
+    assert_eq!(
+        payload["audit"]["temporal_evidence"][0]["stages"][0]["pid"],
+        100
+    );
+    assert_eq!(
+        payload["audit"]["temporal_evidence"][0]["stages"][1]["ppid"],
+        10
+    );
 }
 
 #[test]
@@ -299,6 +340,7 @@ fn telemetry_payload_includes_nac_fields() {
         temporal_hits: vec!["sigma.exec".to_string()],
         kill_chain_hits: Vec::new(),
         kill_chain_evidence: Vec::new(),
+        temporal_evidence: Vec::new(),
         observation_id: None,
         peer_is_configured_server: false,
         exploit_indicators: Vec::new(),
@@ -411,6 +453,7 @@ fn telemetry_payload_includes_correlation_event_fields() {
         temporal_hits: Vec::new(),
         kill_chain_hits: Vec::new(),
         kill_chain_evidence: Vec::new(),
+        temporal_evidence: Vec::new(),
         observation_id: None,
         peer_is_configured_server: false,
         exploit_indicators: Vec::new(),

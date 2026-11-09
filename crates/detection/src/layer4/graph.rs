@@ -15,6 +15,8 @@ pub struct KillChainWitness {
     pub pid: u32,
     pub process: String,
     pub exec_generation: u64,
+    pub signal: String,
+    pub command_line: Option<String>,
 }
 
 fn witness_epoch() -> String {
@@ -221,6 +223,8 @@ impl ProcessGraph {
             pid: event.pid,
             process: event.process.clone(),
             exec_generation: generation,
+            signal: "identity".into(),
+            command_line: None,
         };
         if matches!(event.event_class, EventClass::ProcessExit) {
             self.observe_process_exit(event.pid, event.ts_unix);
@@ -256,6 +260,10 @@ impl ProcessGraph {
             _ => (false, false),
         };
 
+        let socket_stdio = matches!(
+            event.event_class,
+            EventClass::ProcessExec | EventClass::NetworkConnect
+        ) && crate::command_evidence::socket_stdio(event);
         let ptrace_activity = is_ptrace_tool(event);
         let userfaultfd_activity = is_userfaultfd_tool(event);
         let execveat_activity = is_execveat_tool(event);
@@ -348,6 +356,13 @@ impl ProcessGraph {
 
             // Record the causative event, not last_seen refreshed by unrelated reads.
             for (signal, active) in [
+                ("socket_stdio", socket_stdio),
+                (
+                    "network",
+                    matches!(event.event_class, EventClass::NetworkConnect)
+                        && event.dst_port.is_some()
+                        && (socket_stdio || node.signal_witnesses.contains_key("socket_stdio")),
+                ),
                 (
                     "network_non_web",
                     matches!(event.event_class, EventClass::NetworkConnect)
@@ -368,7 +383,12 @@ impl ProcessGraph {
                 ("fileless_exec", fileless_exec),
             ] {
                 if active {
-                    node.signal_witnesses.insert(signal, witness.clone());
+                    let mut witness = witness.clone();
+                    witness.signal = signal.into();
+                    if signal == "socket_stdio" {
+                        witness.command_line = event.command_line.clone();
+                    }
+                    node.signal_witnesses.insert(signal, witness);
                 }
             }
 

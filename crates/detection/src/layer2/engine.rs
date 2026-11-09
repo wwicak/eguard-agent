@@ -15,10 +15,47 @@ pub struct TemporalEvictionCounters {
     pub metadata_cap_evict: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TemporalWitness {
+    pub ts_unix: i64,
+    pub pid: u32,
+    pub ppid: u32,
+    pub exec_generation: u64,
+    pub parent_exec_generation: Option<u64>,
+    pub command_line: Option<String>,
+    pub file_path: Option<String>,
+}
+
+impl TemporalWitness {
+    fn new(
+        event: &TelemetryEvent,
+        exec_generation: u64,
+        parent_exec_generation: Option<u64>,
+    ) -> Self {
+        Self {
+            ts_unix: event.ts_unix,
+            pid: event.pid,
+            ppid: event.ppid,
+            exec_generation,
+            parent_exec_generation,
+            command_line: event.command_line.clone(),
+            file_path: event.file_path.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TemporalEvidence {
+    pub rule: String,
+    pub stages: Vec<TemporalWitness>,
+}
+
 #[derive(Debug, Default)]
 pub struct TemporalEngine {
     automata: Vec<DeterministicMonitorAutomaton>,
-    // Rule-local key: PID for same-process chains, session for exec chains.
+    last_evidence: Vec<TemporalEvidence>,
+    pid_parents: HashMap<u32, u32>,
+    // Rule-local key: PID, or the actual parent for sibling exec chains.
     states: HashMap<(usize, u32), TemporalState>,
     subscriptions: HashMap<EventClass, Vec<usize>>,
     pid_exec_epoch: HashMap<u32, u64>,
@@ -102,6 +139,7 @@ impl TemporalEngine {
 
     pub fn observe(&mut self, event: &TelemetryEvent) -> Vec<String> {
         let mut hits = Vec::new();
+        self.last_evidence.clear();
 
         let horizon_ts = self.advance_observation_horizon(event.ts_unix);
         self.prune_stale_temporal_entries(horizon_ts);
@@ -117,6 +155,7 @@ impl TemporalEngine {
         }
 
         self.record_entity_timestamp(event.pid, event.ts_unix);
+        self.pid_parents.insert(event.pid, event.ppid);
 
         let current_exec_epoch = self.bump_exec_epoch(event.pid, event.event_class);
         let event_identity_fingerprint = Self::identity_fingerprint(event);
@@ -133,22 +172,48 @@ impl TemporalEngine {
                 continue;
             }
 
-            let entity = if automaton.session_linked {
-                event.session_id
+            // Archive comparisons/listings are not archive creation, regardless of rule level.
+            if automaton.name == "linux_data_staging_archive"
+                && !crate::command_evidence::archive_creation(event)
+            {
+                continue;
+            }
+            let entity = if automaton.exec_linked && event.ppid > 1 {
+                event.ppid
             } else {
                 event.pid
             };
-            let key = (rule_id, entity);
-            let current = self.states.get(&key).cloned();
+            let mut candidates = vec![event.pid];
+            let mut ancestor = event.ppid;
+            for _ in 0..4 {
+                if ancestor <= 1 {
+                    break;
+                }
+                candidates.push(ancestor);
+                ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
+            }
+            let current_key = candidates.into_iter().find_map(|pid| {
+                let key = (rule_id, pid);
+                let state = self.states.get(&key)?;
+                self.link_compatible(state, event, automaton.exec_linked)
+                    .then_some(key)
+            });
+            let mut key = current_key.unwrap_or((rule_id, entity));
+            let current = current_key.and_then(|key| self.states.get(&key).cloned());
+            if current.is_none() && !automaton.transitions[0].predicate.matches(event) {
+                continue;
+            }
+            let parent_epoch = self.pid_exec_epoch.get(&event.ppid).copied();
+            let witness = TemporalWitness::new(event, current_exec_epoch, parent_epoch);
 
             let mut next_state = current.clone();
             if let Some(state) = current {
                 let stage_idx = state.stage_idx.min(automaton.transitions.len() - 1);
                 let transition = &automaton.transitions[stage_idx];
-                let exec_epoch_ok =
-                    Self::exec_epoch_compatible(&state, transition, current_exec_epoch);
-                let identity_ok =
-                    Self::identity_compatible(&state, transition, event_identity_fingerprint);
+                let exec_epoch_ok = event.pid != state.pid
+                    || Self::exec_epoch_compatible(&state, transition, current_exec_epoch);
+                let identity_ok = event.pid != state.pid
+                    || Self::identity_compatible(&state, transition, event_identity_fingerprint);
 
                 let monotonic_ok =
                     event.ts_unix + self.reorder_tolerance_secs >= state.last_match_ts;
@@ -161,10 +226,25 @@ impl TemporalEngine {
                     && identity_ok
                     && monotonic_ok
                     && within
-                    && transition.predicate.matches(event)
+                    && (transition.predicate.matches(event)
+                        || (automaton.name == "phi_download_exec"
+                            && state.stage_idx > 0
+                            && crate::command_evidence::downloaded_artifact(
+                                state
+                                    .witnesses
+                                    .last()
+                                    .and_then(|w| w.command_line.as_deref()),
+                                event,
+                            )))
                 {
                     let advanced = stage_idx + 1;
                     if advanced >= automaton.transitions.len() {
+                        let mut stages = state.witnesses.clone();
+                        stages.push(witness.clone());
+                        self.last_evidence.push(TemporalEvidence {
+                            rule: automaton.name.clone(),
+                            stages,
+                        });
                         hits.push(automaton.name.clone());
                         self.states.remove(&key);
                         continue;
@@ -184,8 +264,17 @@ impl TemporalEngine {
                         exec_epoch: next_exec_epoch,
                         identity_fingerprint: next_identity_fingerprint,
                         pid: event.pid,
+                        ppid: event.ppid,
+                        parent_epoch,
+                        exited: false,
+                        witnesses: {
+                            let mut stages = state.witnesses;
+                            stages.push(witness.clone());
+                            stages
+                        },
                     });
                 } else if automaton.transitions[0].predicate.matches(event) {
+                    key = (rule_id, entity);
                     if automaton.transitions.len() == 1 {
                         hits.push(automaton.name.clone());
                         self.states.remove(&key);
@@ -198,6 +287,10 @@ impl TemporalEngine {
                         exec_epoch: Self::initial_exec_epoch(event, current_exec_epoch),
                         identity_fingerprint: event_identity_fingerprint,
                         pid: event.pid,
+                        ppid: event.ppid,
+                        parent_epoch,
+                        exited: false,
+                        witnesses: vec![witness.clone()],
                     });
                 } else if (event.pid == state.pid && (!exec_epoch_ok || !identity_ok))
                     || event.ts_unix - state.first_match_ts > automaton.max_window_secs
@@ -216,6 +309,10 @@ impl TemporalEngine {
                     exec_epoch: Self::initial_exec_epoch(event, current_exec_epoch),
                     identity_fingerprint: event_identity_fingerprint,
                     pid: event.pid,
+                    ppid: event.ppid,
+                    parent_epoch,
+                    exited: false,
+                    witnesses: vec![witness.clone()],
                 });
             }
 
@@ -233,9 +330,46 @@ impl TemporalEngine {
         hits
     }
 
+    pub fn last_evidence(&self) -> &[TemporalEvidence] {
+        &self.last_evidence
+    }
+
+    fn link_compatible(
+        &self,
+        state: &TemporalState,
+        event: &TelemetryEvent,
+        exec_chain: bool,
+    ) -> bool {
+        if event.pid == state.pid {
+            return !state.exited;
+        }
+        if !exec_chain || self.pid_exec_epoch.get(&state.ppid).copied() != state.parent_epoch {
+            return false;
+        }
+        if state
+            .exec_epoch
+            .is_some_and(|epoch| self.pid_exec_epoch.get(&state.pid) != Some(&epoch))
+        {
+            return false;
+        }
+        let sibling = event.ppid > 1 && event.ppid == state.ppid;
+        let mut ancestor = event.ppid;
+        let descendant = (0..4).any(|_| {
+            if ancestor <= 1 {
+                return false;
+            }
+            let found = ancestor == state.pid;
+            ancestor = self.pid_parents.get(&ancestor).copied().unwrap_or(0);
+            found
+        });
+        sibling || descendant
+    }
+
     fn enforce_capacity_limits(&mut self) {
         self.enforce_state_capacity();
         self.enforce_pid_metadata_capacity();
+        self.pid_parents
+            .retain(|pid, _| self.pid_last_seen_ts.contains_key(pid));
     }
 
     fn teardown_entity(&mut self, pid: u32, session_id: u32) {
@@ -245,14 +379,23 @@ impl TemporalEngine {
             }
             // A downloader can exit before its sibling shell starts (wget && sh).
             // Keep only pending exec transitions; never tear down its whole session.
-            pid != session_id
+            let keep = self.automata[*rule_id].exec_linked
+                && pid != session_id
                 && self.automata[*rule_id].transitions[state.stage_idx]
                     .predicate
                     .event_class
-                    == EventClass::ProcessExec
+                    == EventClass::ProcessExec;
+            if keep {
+                state.exited = true;
+            }
+            keep
         });
         self.pid_last_seen_ts.remove(&pid);
-        self.pid_exec_epoch.remove(&pid);
+        // A pending exited downloader still owns its generation; observed PID reuse invalidates it.
+        if !self.states.values().any(|state| state.pid == pid) {
+            self.pid_exec_epoch.remove(&pid);
+        }
+        self.pid_parents.remove(&pid);
     }
 
     fn enforce_state_capacity(&mut self) {
