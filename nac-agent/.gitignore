@@ -1,0 +1,6 @@
+# Build outputs (installers/test binaries are rebuilt from source; ~94 MB)
+/dist/*.exe
+/dist/payload/
+*.test.exe
+
+/dist/unix/

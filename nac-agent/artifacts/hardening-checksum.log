@@ -1,0 +1,5 @@
+dist/boundary-TEST-UNSIGNED.test.exe: OK
+dist/collector-TEST-UNSIGNED.test.exe: OK
+dist/eguard-nac-inspect-TEST-UNSIGNED.exe: OK
+dist/eguard-nac-service-TEST-UNSIGNED.exe: OK
+dist/eGuard-NAC-Setup-0.1.0-x64-TEST-UNSIGNED.exe: OK

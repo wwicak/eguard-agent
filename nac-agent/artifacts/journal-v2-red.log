@@ -1,0 +1,14 @@
+# eguard-nac-agent/journal [eguard-nac-agent/journal.test]
+journal/v2_test.go:16:9: s.AcceptLifecycle undefined (type *Store has no field or method AcceptLifecycle)
+journal/v2_test.go:16:25: undefined: LifecycleTransition
+journal/v2_test.go:17:9: s.AcceptCleanup undefined (type *Store has no field or method AcceptCleanup)
+journal/v2_test.go:17:23: undefined: CleanupTransition
+journal/v2_test.go:20:7: p.Version undefined (type Snapshot has no field or method Version)
+journal/v2_test.go:20:49: p.Lifecycle undefined (type Snapshot has no field or method Lifecycle)
+journal/v2_test.go:20:168: p.Cleanup undefined (type Snapshot has no field or method Cleanup)
+journal/v2_test.go:22:4: p.Lifecycle undefined (type Snapshot has no field or method Lifecycle)
+journal/v2_test.go:22:32: p.Cleanup undefined (type Snapshot has no field or method Cleanup)
+journal/v2_test.go:22:75: q.Lifecycle undefined (type Snapshot has no field or method Lifecycle)
+journal/v2_test.go:22:75: too many errors
+FAIL	eguard-nac-agent/journal [build failed]
+FAIL

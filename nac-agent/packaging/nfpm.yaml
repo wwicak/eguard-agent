@@ -1,0 +1,33 @@
+name: eguard-nac-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+maintainer: eGuard Team <info@eguard.id>
+description: NAC-only posture, inventory and status agent
+license: Proprietary
+vendor: eGuard
+contents:
+  - src: dist/unix/eguard-nac-linux-${ARCH}
+    dst: /usr/lib/eguard-nac/eguard-nac-service
+    file_info:
+      mode: 0755
+  - src: /usr/lib/eguard-nac/eguard-nac-service
+    dst: /usr/bin/eguard-nac
+    type: symlink
+  - src: packaging/systemd/eguard-nac.service
+    dst: /usr/lib/systemd/system/eguard-nac.service
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
+  postremove: packaging/postremove.sh
+depends:
+  - systemd
+deb:
+  signature:
+    key_file: ${GPG_KEY_FILE}
+rpm:
+  signature:
+    key_file: ${GPG_KEY_FILE}

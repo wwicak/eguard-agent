@@ -1,0 +1,14 @@
+# eguard-nac-agent/collector [eguard-nac-agent/collector.test]
+collector/normalize_test.go:8:5: undefined: normalizeDomain
+collector/normalize_test.go:9:5: undefined: normalizeDomain
+collector/normalize_test.go:10:5: undefined: normalizeDomain
+collector/normalize_test.go:13:5: undefined: normalizeAV
+collector/normalize_test.go:13:19: undefined: AVProduct
+collector/normalize_test.go:13:65: undefined: DefenderStatus
+collector/normalize_test.go:15:4: undefined: normalizeAV
+collector/normalize_test.go:15:20: undefined: DefenderStatus
+collector/normalize_test.go:16:4: undefined: normalizeAV
+collector/normalize_test.go:16:20: undefined: DefenderStatus
+collector/normalize_test.go:16:20: too many errors
+FAIL	eguard-nac-agent/collector [build failed]
+FAIL

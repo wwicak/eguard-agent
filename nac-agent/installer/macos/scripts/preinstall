@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+if [ -e '/Library/Application Support/eGuard NAC/state.json' ]; then
+ echo 'Uninstall the enrolled agent with eguard-nac uninstall before replacing it.' >&2
+ exit 1
+fi
