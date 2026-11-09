@@ -1,5 +1,0 @@
-# eguard-nac-agent/collector
-collector/native_windows.go:64:53: undefined: ptrBool
-collector/native_windows.go:65:41: undefined: ptrBool
-collector/native_windows.go:73:38: undefined: windows.NewSockaddrInet4
-collector/native_windows.go:116:117: undefined: ole.S_FALSE

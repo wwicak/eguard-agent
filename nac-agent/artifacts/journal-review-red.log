@@ -1,5 +1,0 @@
-# eguard-nac-agent/journal [eguard-nac-agent/journal.test]
-journal/review_test.go:15:2: undefined: beforeBoltOpen
-journal/review_test.go:33:136: undefined: drainCheck
-FAIL	eguard-nac-agent/journal [build failed]
-FAIL

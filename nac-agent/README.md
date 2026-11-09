@@ -1,3 +1,16 @@
+# eGuard NAC Agent
+
+Agent NAC-only (posture, inventory, status) untuk eGuard NAC Access Policy — terpisah dari EDR eGuard Agent di repo ini (`crates/`), ditulis dalam Go dengan `go.mod` sendiri. Tanpa EDR, driver kernel, remote shell, perintah arbitrer, atau monitoring aktivitas pengguna. Enforcement dilakukan di server dan perangkat jaringan.
+
+- Build/test: `cd nac-agent && go test ./...`
+- CI: `.github/workflows/nac-agent-ci.yml` (hanya saat `nac-agent/**` berubah)
+- Release: tag `nac-v<versi>` → `.github/workflows/release-nac-agent.yml` (deb/rpm GPG, pkg macOS Developer ID + notarisasi, manifest `eguard-nac-agent-release.json`). Tag EDR `v*` tidak memicu workflow ini dan sebaliknya.
+- Installer Windows saat ini masih di-stamp per server (`scripts/build-installer.sh`).
+
+Status: runtime Windows, systemd, dan launchd belum diverifikasi di perangkat nyata untuk semua alur; lihat `docs/`.
+
+---
+
 # eGuard NAC Agent — kandidat lokal TEST-UNSIGNED
 
 Implementasi parsial NAC-only untuk review; **bukan produk siap instalasi**. Dokumentasi Bahasa Indonesia, pesan installer English. Target Windows 11 x64. Core Go menguji Ed25519 lifecycle dan posture tri-state; service Windows memakai subprocess fixed self-collector dengan deadline/output terbatas (Windows Job Object belum diuji di VM) untuk mengumpulkan evidence read-only native dan menulis ringkasan non-identitas ke event log bila sumber tersedia, tanpa pengiriman evidence, enrollment, atau enforcement. Binary `nac-inspect` menampilkan evidence lokal sensitif hanya untuk VM yang diizinkan. Installer NSIS inspection-only **bukan deliverable installer**: hanya menyalin payload ke TEMP; tidak memasang service atau ACL. Jangan jalankan pada host production.

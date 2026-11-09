@@ -9,6 +9,14 @@ on:
         required: true
 permissions:
   contents: read
+# Monorepo: the NAC Agent lives in nac-agent/ (Go, its own go.mod). Tags nac-v* never match
+# the EDR release pattern v*, and EDR tags never match nac-v*.
+defaults:
+  run:
+    working-directory: nac-agent
+concurrency:
+  group: release-nac-agent-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: nac-agent/go.mod
       - id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -39,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: nac-agent/go.mod
       - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.1
       - name: Prepare optional signing key
         if: env.GPG_PRIVATE_KEY != ''
@@ -54,9 +62,9 @@ jobs:
         with:
           name: linux
           path: |
-            dist/unix/*.deb
-            dist/unix/*.rpm
-            dist/unix/eguard-nac-linux-*
+            nac-agent/dist/unix/*.deb
+            nac-agent/dist/unix/*.rpm
+            nac-agent/dist/unix/eguard-nac-linux-*
       - if: always()
         run: rm -f "$RUNNER_TEMP/signing.asc"
   macos:
@@ -75,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: nac-agent/go.mod
       - name: Build universal binary (CI only)
         run: |
           mkdir -p dist/unix
@@ -117,7 +125,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: dist/unix/*.pkg
+          path: nac-agent/dist/unix/*.pkg
       - if: always()
         run: |
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/identity.p12"
@@ -129,7 +137,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: nac-agent/go.mod
       - env:
           CGO_ENABLED: '0'
           GOOS: windows
@@ -141,7 +149,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-binaries
-          path: dist/windows/*.exe
+          path: nac-agent/dist/windows/*.exe
   release:
     needs: [test, linux, macos, windows-binaries]
     runs-on: ubuntu-latest
@@ -154,10 +162,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: nac-agent/go.mod
       - uses: actions/download-artifact@v4
         with:
-          path: dist/release
+          path: nac-agent/dist/release
           merge-multiple: true
       - name: Manifest, checksums and SBOM
         run: |
@@ -165,4 +173,4 @@ jobs:
           python3 scripts/gen-sbom.py go "$VERSION" dist/release/eguard-nac-agent.cdx.json dist/release/eguard-nac-linux-* dist/release/*.exe
           (cd dist/release; sha256sum -- * > ../SHA256SUMS; mv ../SHA256SUMS .)
       - name: Publish
-        run: gh release create "nac-v$VERSION" dist/release/* --title "eGuard NAC $VERSION" --generate-notes
+        run: gh release create "nac-v$VERSION" dist/release/* --title "eGuard NAC Agent $VERSION" --notes "eGuard NAC Agent $VERSION (posture/inventory only). Packages are fetched by eGuard servers via the NAC agent sync (manifest eguard-nac-agent-release.json)." --latest=false

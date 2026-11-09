@@ -4,3 +4,7 @@
 *.test.exe
 
 /dist/unix/
+/dist/
+/artifacts/
+__pycache__/
+*.pyc

@@ -1,5 +1,0 @@
-# eguard-nac-agent/boundary [eguard-nac-agent/boundary.test]
-boundary/boundary.go:23:54: syntax error: unexpected : at end of statement
-ok  	eguard-nac-agent/collector	0.032s
-FAIL	eguard-nac-agent/boundary [build failed]
-FAIL

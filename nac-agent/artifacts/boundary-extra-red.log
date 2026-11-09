@@ -1,6 +1,0 @@
-# eguard-nac-agent/boundary [eguard-nac-agent/boundary.test]
-boundary/boundary_test.go:7:2: "path/filepath" imported and not used
-boundary/boundary_test.go:9:2: "strings" imported and not used
-boundary/boundary_test.go:10:2: "syscall" imported and not used
-FAIL	eguard-nac-agent/boundary [build failed]
-FAIL

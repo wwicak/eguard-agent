@@ -1,1 +1,0 @@
-sha256sum -c artifacts/SHA256SUMS exit=0

@@ -1,4 +1,0 @@
-# eguard-nac-agent/journal
-journal/store_test.go:25:2: expected operand, found 'if'
-FAIL	eguard-nac-agent/journal [setup failed]
-FAIL

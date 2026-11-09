@@ -1,7 +1,0 @@
-ok  	eguard-nac-agent/collector	(cached)
---- FAIL: TestBoundedOutputAndTimeout (0.25s)
-    --- FAIL: TestBoundedOutputAndTimeout/valid (0.02s)
-        boundary_test.go:26: valid: {AgentType: Domain:{PartOfDomain: Match: Domain: Source: Error:} AV:{Installed: Running: Updated: Products:[] Source: Error:} Firewall:map[] Adapters:[] OS: ObservedAt:0001-01-01 00:00:00 +0000 UTC TTL:0s Errors:[]} collector evidence invalid
-FAIL
-FAIL	eguard-nac-agent/boundary	0.519s
-FAIL

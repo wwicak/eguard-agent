@@ -1,5 +1,0 @@
-# eguard-nac-agent/boundary [eguard-nac-agent/boundary.test]
-boundary/gate_test.go:15:18: undefined: AwaitGate
-boundary/gate_test.go:26:43: undefined: AwaitGate
-FAIL	eguard-nac-agent/boundary [build failed]
-FAIL
