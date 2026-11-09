@@ -1,0 +1,37 @@
+name: NAC Agent CI
+# Fast checks for the NAC Agent (nac-agent/, Go). Runs only when NAC files change,
+# so EDR (Rust) pushes are not slowed down and NAC pushes do not need the EDR toolchain.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "nac-agent/**"
+      - ".github/workflows/nac-agent-ci.yml"
+      - ".github/workflows/release-nac-agent.yml"
+  pull_request:
+    paths:
+      - "nac-agent/**"
+      - ".github/workflows/nac-agent-ci.yml"
+      - ".github/workflows/release-nac-agent.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    working-directory: nac-agent
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: nac-agent/go.mod
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go test -race -count=1 ./...
+      - run: for os in linux darwin windows; do GOOS=$os go vet ./...; done
+      - run: |
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build ./...
+          done
+      - run: for f in scripts/*.sh installer/macos/build-pkg.sh installer/macos/scripts/* packaging/*.sh; do bash -n "$f"; done

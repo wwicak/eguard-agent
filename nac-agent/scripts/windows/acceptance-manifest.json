@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {"path": "dist/eGuard-NAC-Setup-0.1.0-x64-TEST-UNSIGNED.exe", "sha256": "2ba476ea94be4237c3f635248d31c8ff6a55797612ef6a7aa8dd5b853ae2025c", "signature_class": "TEST-UNSIGNED"},
+    {"path": "dist/eguard-nac-service-TEST-UNSIGNED.exe", "sha256": "25345520e9095b723be2d8a4bc14d3655d2a6d260415f0c906a4b27365ee1fd3", "signature_class": "TEST-UNSIGNED"}
+  ]
+}

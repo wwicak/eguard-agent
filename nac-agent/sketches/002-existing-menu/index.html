@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>eGuard — NAC Agent placement in existing menu (MOCKUP)</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f6f8fb;color:#1b2430;font-size:14px}
+.banner{background:#fff4d6;color:#7a5600;padding:5px;font-size:12px;text-align:center}
+.l1{height:62px;background:#177DFA;box-shadow:0 5px 18px rgba(0,74,168,.18);display:flex;align-items:center;padding:0 40px;gap:16px}
+.logo{color:#fff;font-weight:800;font-size:18px;margin-right:12px}
+.l1 a{color:#eaf3ff;font-weight:600;font-size:14px;height:36px;display:inline-flex;align-items:center;padding:0 16px;border-radius:999px;cursor:pointer}
+.l1 a.on{background:#fff;color:#177DFA}
+.l2{background:#f4f8ff;border-bottom:1px solid #dbeafe;min-height:58px;display:flex;align-items:center;gap:6px;overflow-x:auto;padding:0 32px;justify-content:safe center}
+.l2 a,.l3 a{white-space:nowrap;flex-shrink:0;font-weight:600;font-size:14px;padding:0 14px;height:36px;display:inline-flex;align-items:center;border-radius:8px;cursor:pointer;color:#475569}
+.l2 a.on{background:#177DFA;color:#fff}
+.l3{background:#fff;border-bottom:1px solid #e2e8f0;min-height:54px;display:flex;justify-content:safe center;align-items:center;gap:4px;overflow-x:auto;padding:0 32px}
+.l3 a{height:32px}.l3 a.on{background:#F1F8FF;color:#177DFA}
+.new{display:inline-flex;align-items:center;height:16px;font-size:10px;line-height:1;background:#16a34a;color:#fff !important;border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:middle}
+main{max-width:1180px;margin:20px auto;padding:0 24px}
+h2{font-size:18px;margin-bottom:4px}.sub{color:#64748b;margin-bottom:16px}
+.panel{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:18px;margin-bottom:14px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid #e2e8f0;margin-bottom:16px}
+.tabs span{padding:10px 14px;font-weight:600;color:#64748b;border-bottom:2px solid transparent;cursor:pointer}
+.tabs span.on{color:#177DFA;border-color:#177DFA}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+label{display:block;font-weight:600;font-size:13px;margin:12px 0 5px}
+input,select{width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit}
+.seg{display:flex;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden}
+.seg button{flex:1;padding:8px;border:0;background:#fff;cursor:pointer;font:inherit}
+.seg button.on{background:#177DFA;color:#fff;font-weight:600}
+.hint{color:#64748b;font-size:12px;margin-top:5px}
+.btn{white-space:nowrap;background:#177DFA;color:#fff;border:0;border-radius:6px;padding:9px 14px;font-weight:600;cursor:pointer}
+.btn.o{background:#fff;color:#177DFA;border:1px solid #177DFA}.btn.d{background:#dc2626}
+.tw{overflow-x:auto}table{width:100%;border-collapse:collapse}td:first-child{white-space:nowrap;font-family:ui-monospace,monospace;font-size:13px}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid #eef2f6}
+th{white-space:nowrap;font-size:12px;color:#64748b;text-transform:uppercase}
+.pill{white-space:nowrap;display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.ok{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.bad{background:#fee2e2;color:#991b1b}.unk{background:#e2e8f0;color:#475569}.info{background:#dbeafe;color:#1d4ed8}
+.where{background:#ecfdf5;border:1px dashed #16a34a;color:#166534;padding:8px 12px;border-radius:8px;font-size:12px;margin-bottom:14px}
+.screen{display:none}.screen.on{display:block}
+.modal{z-index:2000;position:fixed;inset:0;background:rgba(15,25,40,.45);display:none;align-items:center;justify-content:center}.modal.on{display:flex}
+.dlg{background:#fff;border-radius:12px;padding:22px;width:520px}
+code,.tok{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospace,monospace;font-size:12px}
+.tok{display:block;padding:10px;word-break:break-all;margin:8px 0}
+</style></head><body>
+<div class="banner">MOCKUP — placement inside the current eGuard menu. Sample data. Green "NEW" marks the only additions.</div>
+<div class="l1"><span class="logo">eGuard</span><a>Dashboard</a><a>Assets</a><a id="l1ac">Access Control</a><a id="l1es" class="on">Endpoint Security</a><a>Logs &amp; Reports</a><a>Settings</a></div>
+<div class="l2" id="l2"></div><div class="l3" id="l3"></div>
+<main>
+<section class="screen on" id="enroll">
+<div class="where">Location: <b>Endpoint Security › Configuration › Enrollment &amp; Install</b> — existing page, one new tab <b>NAC Agent</b>. Existing tabs unchanged.</div>
+<h2>Enrollment Tokens</h2><div class="sub">Create tokens and installers for endpoint agents.</div>
+<div class="panel"><div class="tabs"><span>Step 1: Create Token</span><span>Step 2: Generate Install</span><span>Step 3: Review Registry</span><span>Step 4: Apple MDM Profile</span><span class="on">NAC Agent<span class="new">NEW</span></span></div>
+<div class="grid"><div>
+<label>Device name</label><input value="GUEST-AUDIT-07">
+<label>Site</label><select><option>Head Office</option><option>Branch</option></select>
+<label>Mode</label><div class="seg" id="mode"><button data-v="temporary" class="on">Temporary</button><button data-v="permanent">Permanent</button></div>
+<div id="tbox"><label>Access valid until</label><input value="10 Nov 2026, 17:00 (WITA)"><div class="hint">Access ends on the server at this time. The agent removes itself while running, or at next start-up — no network connection to eGuard needed.</div></div>
+<label>Anti-Tamper</label><div class="seg" id="at"><button data-v="on" class="on">On</button><button data-v="off">Off</button></div>
+<div class="hint" id="ath">Uninstall needs a one-time authorization (file or text token). Local administrators can still use the documented recovery procedure.</div>
+</div><div>
+<label>Installer</label><div class="panel" style="margin:0"><b>eGuard-NAC-Setup-0.2.0-x64.exe</b><div class="hint">Windows 10/11 x64 · posture only (adapters, identity, domain, antivirus, firewall). Not an EDR.</div></div>
+<label>Enrollment files</label><div class="hint">bootstrap.json + activation.json (activation valid 15 minutes, single use)</div>
+<div style="margin-top:14px;display:flex;gap:8px"><button class="btn">Generate</button><button class="btn o">Download installer</button></div>
+<label>Install command</label><code>eGuard-NAC-Setup-0.2.0-x64.exe /BOOTSTRAP=bootstrap.json /ACTIVATION=activation.json</code>
+</div></div></div></section>
+
+<section class="screen" id="list">
+<div class="where">Location: <b>Access Control › NAC Agents</b> — new entry next to <b>Manual Override</b>. Uses the same table style as Endpoint Agents.</div>
+<h2>NAC Agents</h2><div class="sub">Posture-only agents used by Access Policies. Unknown is never treated as compliant. During an eGuard outage devices keep their last decision until evidence freshness runs out.</div>
+<div class="panel tw"><table><thead><tr><th>Device</th><th>Mode</th><th>Anti-Tamper</th><th>Lifecycle</th><th>Last posture</th><th>Domain</th><th>AV</th><th>Firewall</th><th></th></tr></thead><tbody>
+<tr><td>LAPTOP-FIN-0142</td><td>Permanent</td><td>On</td><td><span class="pill ok">Active</span></td><td>32 s ago</td><td><span class="pill ok">Joined</span></td><td><span class="pill ok">Running · Updated</span></td><td><span class="pill ok">3/3</span></td><td><button class="btn d auth">Uninstall…</button></td></tr>
+<tr><td>GUEST-AUDIT-07</td><td>Temporary<div class="hint">ends 10 Nov 17:00</div></td><td>On</td><td><span class="pill ok">Active</span></td><td>1 min ago</td><td><span class="pill warn">Not joined</span></td><td><span class="pill unk">Unknown</span></td><td><span class="pill ok">3/3</span></td><td><button class="btn d auth">Uninstall…</button></td></tr>
+<tr><td>VENDOR-LAP-22</td><td>Temporary<div class="hint">ended 02 Nov</div></td><td>Off</td><td><span class="pill unk">Expired · removes at next start</span></td><td><span style="white-space:nowrap">2 days ago <span class="pill warn">Stale</span></span></td><td>—</td><td>—</td><td>—</td><td class="hint">—</td></tr>
+</tbody></table></div></section>
+</main>
+<div class="modal" id="m"><div class="dlg"><h3>Authorize uninstall</h3>
+<p style="margin:8px 0">One-time authorization for <b id="dev">GUEST-AUDIT-07</b> only. Valid <b>10 minutes</b>, cannot be reused. Works offline: the guest does not need to reach eGuard.</p>
+<label>Reason (audit log)</label><input id="r" placeholder="e.g. Guest left the site">
+<div id="out" style="display:none"><label>Give the guest one of these</label>
+<div class="hint">Text token (paste into an elevated prompt):</div>
+<span class="tok" id="tk">nac-setup.exe uninstall /TOKEN=eyJ2ZXJzaW9uIjoxLCJrZXlfaWQiOiJsaWZlLTEiLCJwYXlsb2FkX2I2NCI6Ii4uLiJ9</span>
+<div style="display:flex;gap:8px"><button class="btn o" id="cp">Copy token</button><button class="btn o">Download authorization.json</button></div></div>
+<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn o" id="c">Close</button><button class="btn d" id="g" disabled>Create</button></div></div></div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+const ES={l2:['Detect & Monitor','Investigate','Respond','Protect','Intelligence','Fleet & Compliance','Configuration'],on2:'Configuration',l3:['Policies','Agent Config','Enrollment & Install'],on3:'Enrollment & Install'};
+const AC={l2:['Access Profiles','RADIUS Rules','Access Policies','Agentless Management','Agentless Readiness','Investigate Device','Segmentation','Manual Override','NAC Agents'],on2:'NAC Agents',l3:[]};
+function nav(c){$('#l2').innerHTML=c.l2.map(x=>`<a class="${x===c.on2?'on':''}">${x}${x==='NAC Agents'?'<span class="new">NEW</span>':''}</a>`).join('');$('#l3').style.display=c.l3.length?'flex':'none';$('#l3').innerHTML=c.l3.map(x=>`<a class="${x===c.on3?'on':''}">${x}</a>`).join('')}
+function reveal(){document.querySelectorAll('.l2 a.on,.l3 a.on').forEach(a=>a.scrollIntoView({inline:'center',block:'nearest'}))}
+function show(w){$$('.screen').forEach(s=>s.classList.toggle('on',s.id===w));$('#l1es').classList.toggle('on',w==='enroll');$('#l1ac').classList.toggle('on',w==='list');nav(w==='enroll'?ES:AC);reveal()}
+$('#l1es').onclick=()=>show('enroll');$('#l1ac').onclick=()=>show('list');show('enroll');
+function seg(id,cb){$$('#'+id+' button').forEach(b=>b.onclick=()=>{$$('#'+id+' button').forEach(x=>x.classList.remove('on'));b.classList.add('on');cb(b.dataset.v)})}
+seg('mode',v=>$('#tbox').style.display=v==='temporary'?'block':'none');
+seg('at',v=>$('#ath').textContent=v==='on'?'Uninstall needs a one-time authorization (file or text token). Local administrators can still use the documented recovery procedure.':'An administrator on the device can uninstall without authorization.');
+$$('.auth').forEach(b=>b.onclick=()=>{$('#out').style.display='none';$('#m').classList.add('on')});
+$('#c').onclick=()=>$('#m').classList.remove('on');$('#r').oninput=e=>$('#g').disabled=!e.target.value.trim();
+$('#g').onclick=()=>{$('#out').style.display='block';$('#r').disabled=true;$('#g').style.display='none'};
+$('#cp').onclick=()=>{$('#cp').textContent='Copied'};
+$$('.auth').forEach(b=>b.addEventListener('click',()=>{$('#dev').textContent=b.closest('tr').firstElementChild.textContent;$('#r').disabled=false;$('#r').value='';$('#g').style.display='';$('#g').disabled=true}));
+</script></body></html>

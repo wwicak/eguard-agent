@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "clean_install", "description": "Clean install and UAC outcomes"},
+    {"id": "upgrade_rollback", "description": "Upgrade, downgrade rejection and rollback"},
+    {"id": "temporary_on", "description": "Temporary / Anti-Tamper ON"},
+    {"id": "temporary_off", "description": "Temporary / Anti-Tamper OFF"},
+    {"id": "permanent_on", "description": "Permanent / Anti-Tamper ON"},
+    {"id": "permanent_off", "description": "Permanent / Anti-Tamper OFF"},
+    {"id": "expiry_offline_reboot_clock", "description": "Offline expiry, reboot and clock change"},
+    {"id": "standard_user_tamper", "description": "Standard-user service/config/key/binary protection"},
+    {"id": "authorized_uninstall", "description": "Authorized uninstall and OFF elevated admin behavior"},
+    {"id": "cleanup", "description": "Owned NAC resources only"},
+    {"id": "coexist_edr", "description": "Coexistence with EDR"}
+  ]
+}

@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+mkdir -p /usr/local/bin
+ln -sf '/Library/eGuard NAC/eguard-nac-service' /usr/local/bin/eguard-nac
+chown root:wheel /Library/LaunchDaemons/id.eguard.nac.plist
+chmod 644 /Library/LaunchDaemons/id.eguard.nac.plist
+# Enrollment alone bootstraps launchd. Never load an unenrolled daemon.
