@@ -399,15 +399,17 @@ mod tests {
     use super::*;
 
     fn assert_systemprofile_is_not_credential_source(path: &str) {
-        let nt_path = path.replacen("C:", r"\Device\HarddiskVolume3", 1);
-        for path in [path.to_string(), nt_path] {
-            for variant in [
-                path.clone(),
-                path.to_ascii_lowercase(),
-                path.to_ascii_uppercase(),
-            ] {
-                assert!(!is_sensitive_credential_path(&variant), "{variant}");
-                assert!(!is_credential_source(&variant), "{variant}");
+        for path in [path.to_string(), format!("{path}:Zone.Identifier")] {
+            let nt_path = path.replacen("C:", r"\Device\HarddiskVolume3", 1);
+            for path in [path, nt_path] {
+                for variant in [
+                    path.clone(),
+                    path.to_ascii_lowercase(),
+                    path.to_ascii_uppercase(),
+                ] {
+                    assert!(!is_sensitive_credential_path(&variant), "{variant}");
+                    assert!(!is_credential_source(&variant), "{variant}");
+                }
             }
         }
     }
@@ -445,6 +447,35 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn agentfix28_hive_streams_remain_credential_sources() {
+        for path in [
+            r"C:\Windows\System32\config\SAM::$DATA",
+            r"\Device\HarddiskVolumeShadowCopy1\Windows\System32\config\SYSTEM::$DATA",
+            r"C:\Windows\System32\config\SECURITY:x:$DATA",
+            r"C:\Windows\System32\config\SAM.LOG1:secret:$DATA",
+        ] {
+            assert!(is_sensitive_credential_path(path), "{path}");
+            assert!(is_credential_source(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn agentfix28_nested_hive_path_remains_credential_source() {
+        let path = r"C:\Windows\System32\config\systemprofile\x\Windows\System32\config\SAM";
+        assert!(is_sensitive_credential_path(path), "{path}");
+        assert!(is_credential_source(path), "{path}");
+    }
+
+    #[test]
+    fn agentfix28_regback_system_and_security_are_credential_sources() {
+        for hive in ["SYSTEM", "SECURITY"] {
+            let path = format!(r"C:\Windows\System32\config\RegBack\{hive}");
+            assert!(is_sensitive_credential_path(&path), "{path}");
+            assert!(is_credential_source(&path), "{path}");
         }
     }
 
