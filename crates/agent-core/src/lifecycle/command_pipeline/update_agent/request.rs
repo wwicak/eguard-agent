@@ -44,6 +44,8 @@ impl UpdatePackageKind {
 
 #[derive(Debug, Clone)]
 pub(super) struct NormalizedUpdateRequest {
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    pub(super) command_authenticated: bool,
     version: String,
     package_url: String,
     checksum_sha256: String,
@@ -97,6 +99,8 @@ pub(super) fn normalize_update_request(
     enforce_package_kind_for_target(package_kind)?;
 
     Ok(NormalizedUpdateRequest {
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        command_authenticated: grpc_tls && !server_addr.trim().starts_with("http://"),
         version,
         package_url,
         checksum_sha256,
@@ -326,6 +330,38 @@ mod tests {
             checksum_sha256: checksum.to_string(),
             package_format: format.to_string(),
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn update_window_authentication_comes_from_command_tls_not_package_url() {
+        for authenticated in [false, true] {
+            let request = normalize_update_request(
+                linux_payload(
+                    "https://eguard.example/package.deb",
+                    "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+                    "deb",
+                ),
+                "eguard.example:50052",
+                authenticated,
+            )
+            .unwrap();
+            assert_eq!(request.command_authenticated, authenticated);
+        }
+        let request = normalize_update_request(
+            linux_payload(
+                "https://eguard.example/package.deb",
+                "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+                "deb",
+            ),
+            "http://eguard.example:50052",
+            true,
+        )
+        .unwrap();
+        assert!(
+            !request.command_authenticated,
+            "explicit HTTP overrides TLS in the client URL builder"
+        );
     }
 
     #[test]

@@ -160,7 +160,8 @@ impl AgentRuntime {
         })
         .to_string();
 
-        let alert = EventEnvelope {
+        #[allow(unused_mut)]
+        let mut alert = EventEnvelope {
             agent_id: self.config.agent_id.clone(),
             event_type: "alert".to_string(),
             severity: "critical".to_string(),
@@ -168,6 +169,8 @@ impl AgentRuntime {
             payload_json: payload,
             created_at_unix: now_unix,
         };
+        #[cfg(target_os = "linux")]
+        super::update_window::classify(&mut alert, super::update_window::current(now_unix));
 
         if self.client.is_online() {
             match timeout(

@@ -38,6 +38,8 @@ mod tick;
 mod timing;
 mod types;
 mod uninstall_auth;
+#[cfg(target_os = "linux")]
+mod update_window;
 
 mod bundle_path;
 mod command_control_pipeline;
