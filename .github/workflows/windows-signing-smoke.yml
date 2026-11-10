@@ -1,0 +1,83 @@
+name: Windows Signing Smoke
+
+on:
+  push:
+    branches: [ci/windows-signing]
+
+permissions:
+  contents: read
+
+jobs:
+  signing:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate SimplySign secret format without disclosure
+        shell: pwsh
+        env:
+          SIMPLYSIGN_CODE: ${{ secrets.SIMPLYSIGN_CODE }}
+        run: ./.github/scripts/connect-simplysign.ps1 -ValidateOnly
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build tiny test EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path signing-smoke | Out-Null
+          'public static class Smoke { public static void Main() {} }' | Set-Content signing-smoke/smoke.cs
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:signing-smoke/test.exe signing-smoke/smoke.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Test EXE compilation failed' }
+
+      - name: Connect official SimplySign Desktop
+        shell: pwsh
+        env:
+          SIMPLYSIGN_EMAIL: dimas.tw@gmail.com
+          SIMPLYSIGN_CODE: ${{ secrets.SIMPLYSIGN_CODE }}
+        run: ./.github/scripts/connect-simplysign.ps1
+
+      - name: Sign and verify test EXE with mandatory timestamp
+        shell: pwsh
+        run: ./.github/scripts/sign-windows.ps1 -Path signing-smoke/test.exe
+
+      - name: Build tiny MSI containing signed EXE
+        shell: pwsh
+        run: |
+          @'
+          <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+            <Package Name="eGuard Signing Smoke" Manufacturer="PT. Eguard Teknologi Indonesia" Version="0.0.1" UpgradeCode="134C5B68-22F5-4728-BCEE-C210B4BB58D2" Scope="perMachine">
+              <MediaTemplate EmbedCab="yes" />
+              <StandardDirectory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="eGuardSigningSmoke">
+                  <Component Id="SmokeExe" Guid="*">
+                    <File Id="SmokeExeFile" Source="signing-smoke/test.exe" KeyPath="yes" />
+                  </Component>
+                </Directory>
+              </StandardDirectory>
+              <Feature Id="Main"><ComponentRef Id="SmokeExe" /></Feature>
+            </Package>
+          </Wix>
+          '@ | Set-Content signing-smoke/test.wxs
+          wix build signing-smoke/test.wxs -arch x64 -o signing-smoke/test.msi
+          if ($LASTEXITCODE -ne 0) { throw 'Test MSI build failed' }
+
+      - name: Sign and verify test MSI with mandatory timestamp
+        shell: pwsh
+        run: ./.github/scripts/sign-windows.ps1 -Path signing-smoke/test.msi
+
+      - name: Upload signed test files only
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-signing-smoke
+          path: |
+            signing-smoke/test.exe
+            signing-smoke/test.msi
+          if-no-files-found: error
+          retention-days: 7
