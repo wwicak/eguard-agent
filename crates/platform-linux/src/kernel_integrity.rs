@@ -200,7 +200,7 @@ pub fn scan_kernel_integrity(
         let count = contents
             .lines()
             .map(str::trim)
-            .filter(|line| !line.is_empty())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .count();
         if count > 0 {
             report.ftrace_filter_count = count;
@@ -320,6 +320,44 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn kernel_integrity_scan_ignores_ftrace_placeholder_and_comments() {
+        let root = temp_dir("kernel-integrity-ftrace-placeholder");
+        let proc_modules = root.join("proc_modules");
+        let sys_modules = root.join("sys_module");
+        let filter = root.join("set_ftrace_filter");
+        fs::write(&proc_modules, "").expect("write proc modules");
+        fs::create_dir(&sys_modules).expect("create sys module dir");
+        let opts = KernelIntegrityScanOptions {
+            proc_modules_path: proc_modules,
+            sys_module_path: sys_modules,
+            ftrace_filter_path: filter.clone(),
+            kprobe_events_path: root.join("kprobe_events"),
+            current_tracer_path: root.join("current_tracer"),
+            lsm_list_path: root.join("lsm"),
+            bpffs_root: root.join("bpffs"),
+        };
+        for contents in [
+            "#### all functions enabled ####\n",
+            "  # filter comment\n\n",
+        ] {
+            fs::write(&filter, contents).expect("write ftrace filter");
+            let report = scan_kernel_integrity(&opts).expect("scan");
+            assert_eq!(report.ftrace_filter_count, 0, "{contents:?}");
+            assert!(report
+                .indicators
+                .iter()
+                .all(|entry| !entry.starts_with("ftrace_")));
+        }
+        fs::write(&filter, "# comment\nsys_execve\n").expect("write real filter");
+        let report = scan_kernel_integrity(&opts).expect("scan");
+        assert_eq!(report.ftrace_filter_count, 1);
+        assert!(report
+            .indicators
+            .contains(&"ftrace_filter_count:1".to_string()));
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
