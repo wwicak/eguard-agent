@@ -82,6 +82,11 @@ async fn run_console() -> Result<()> {
 async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
     init_tracing();
 
+    #[cfg(target_os = "windows")]
+    if let Err(err) = platform_windows::self_protect::acl::harden_data_directory() {
+        warn!(error = %err, "failed hardening agent data directory; continuing");
+    }
+
     let config = AgentConfig::load()?;
     let mut runtime = AgentRuntime::new(config.clone())?;
 
