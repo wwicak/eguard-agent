@@ -11,26 +11,45 @@ function Mask-Value([string]$Value) {
 
 # Only static diagnostics may escape this script: parser/UI exceptions can contain credentials.
 try {
-    $raw = $env:SIMPLYSIGN_CODE
+    $raw = [string]$env:SIMPLYSIGN_CODE
     Mask-Value $raw
-    $raw = $raw.Trim()
-    Mask-Value $raw
-    $seed = $raw
+    $trimmed = $raw.Trim()
+    Mask-Value $trimmed
+    $isUri = $trimmed.StartsWith('otpauth://', [StringComparison]::OrdinalIgnoreCase)
+    $seed = $trimmed
     $format = 'base32'
-    if ($raw.StartsWith('otpauth://', [StringComparison]::OrdinalIgnoreCase)) {
-        $uri = [uri]$raw
-        if ($uri.Scheme -ne 'otpauth' -or $uri.Host -ne 'totp') { throw 'format' }
-        $query = [System.Web.HttpUtility]::ParseQueryString($uri.Query)
-        if (($query['algorithm'] -and $query['algorithm'] -ne 'SHA1') -or
-            ($query['digits'] -and $query['digits'] -ne '6') -or
-            ($query['period'] -and $query['period'] -ne '30')) { throw 'format' }
-        $seed = $query['secret']
+    $validUri = $true
+    if ($isUri) {
         $format = 'otpauth'
+        try {
+            $uri = [uri]$trimmed
+            $query = [System.Web.HttpUtility]::ParseQueryString($uri.Query)
+            $seed = [string]$query['secret']
+            $validUri = $uri.Scheme -eq 'otpauth' -and $uri.Host -eq 'totp' -and
+                (-not $query['algorithm'] -or $query['algorithm'] -eq 'SHA1') -and
+                (-not $query['digits'] -or $query['digits'] -eq '6') -and
+                (-not $query['period'] -or $query['period'] -eq '30')
+        } catch { $validUri = $false; $seed = '' }
     }
     Mask-Value $seed
-    if ($seed -notmatch '^[A-Za-z2-7]{16,}={0,6}$') { throw 'format' }
-    $seed = $seed.TrimEnd('=').ToUpperInvariant()
+    $seed = ($seed.Trim() -replace '[\s=\-]', '').ToUpperInvariant()
     Mask-Value $seed
+    # Shape facts only: never reveal the value, prefixes, suffixes, or substrings.
+    $shape = [ordered]@{
+        raw_length = $raw.Length
+        normalized_length = $seed.Length
+        upper = [regex]::IsMatch($raw, '[A-Z]')
+        lower = [regex]::IsMatch($raw, '[a-z]')
+        digits_0_1 = [regex]::IsMatch($raw, '[01]')
+        digits_2_7 = [regex]::IsMatch($raw, '[2-7]')
+        digits_8_9 = [regex]::IsMatch($raw, '[89]')
+        space = [regex]::IsMatch($raw, '\s')
+        dash = $raw.Contains('-')
+        other_punctuation_count = [regex]::Matches($raw, '[^A-Za-z0-9\s\-]').Count
+        starts_with_otpauth = $isUri
+    }
+    Write-Host ('SIMPLYSIGN_CODE shape: ' + ($shape | ConvertTo-Json -Compress))
+    if (-not $validUri -or $seed -cnotmatch '^[A-Z2-7]{16,}$') { throw 'format' }
     $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
     $key = [System.Collections.Generic.List[byte]]::new()
     $buffer = 0
@@ -44,7 +63,7 @@ try {
             $buffer = $buffer -band ((1 -shl $bits) - 1)
         }
     }
-    if ($buffer -ne 0 -or $key.Count -lt 10 -or $bits -ge 5) { throw 'format' }
+    if ($key.Count -lt 10) { throw 'format' }
 } catch {
     Write-Host '::error::SIMPLYSIGN_CODE is not a TOTP seed (looks like a one-time activation code)'
     exit 1
@@ -141,5 +160,6 @@ try {
     $token = $null
     $seed = $null
     $raw = $null
+    $trimmed = $null
     if ($key) { $key.Clear() }
 }
