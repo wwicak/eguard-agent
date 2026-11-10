@@ -233,7 +233,8 @@ pub fn scan_kernel_integrity(
     if let Ok(entries) = fs::read_dir(&opts.bpffs_root) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.is_empty() || name == "eguard" {
+            // snapd pins device-cgroup BPF programs under its own namespace.
+            if name.is_empty() || name == "eguard" || name == "snap" {
                 continue;
             }
             report.bpffs_objects.push(name.clone());
@@ -357,6 +358,31 @@ mod tests {
         assert!(report
             .indicators
             .contains(&"ftrace_filter_count:1".to_string()));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn kernel_integrity_scan_ignores_snapd_pins_but_detects_unknown_objects() {
+        let root = temp_dir("kernel-integrity-snapd-pins");
+        fs::write(root.join("proc_modules"), "").expect("write proc modules");
+        fs::create_dir(root.join("sys_module")).expect("create sys module dir");
+        let bpffs = root.join("bpffs");
+        fs::create_dir(&bpffs).expect("create bpffs");
+        for name in ["snap", "eguard", "evil_prog"] {
+            fs::create_dir(bpffs.join(name)).expect("create pinned object");
+        }
+        let report = scan_kernel_integrity(&KernelIntegrityScanOptions {
+            proc_modules_path: root.join("proc_modules"),
+            sys_module_path: root.join("sys_module"),
+            kprobe_events_path: root.join("kprobe_events"),
+            current_tracer_path: root.join("current_tracer"),
+            ftrace_filter_path: root.join("set_ftrace_filter"),
+            lsm_list_path: root.join("lsm"),
+            bpffs_root: bpffs,
+        })
+        .expect("scan");
+        assert_eq!(report.bpffs_objects, vec!["evil_prog"]);
+        assert_eq!(report.indicators, vec!["bpffs_pinned_object:evil_prog"]);
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
