@@ -13,7 +13,7 @@ import (
 
 func (u UnixProvider) LinuxPosture(ctx context.Context, expected string) core.Posture {
 	now := u.Now()
-	p := Collect(now)
+	p := collectSnapshot(now)
 	p.Errors = nil
 	fw := ev(core.Unknown, "linux firewall")
 	if h, e := os.Hostname(); e == nil {
@@ -122,6 +122,7 @@ func (u UnixProvider) LinuxPosture(ctx context.Context, expected string) core.Po
 	if ctx.Err() != nil {
 		p.TTL = 0
 	}
+	p.Adapters = RelevantAdapters(p.Adapters)
 	return p
 }
 func (u UnixProvider) LinuxInventory(ctx context.Context, software, user bool) core.Inventory {

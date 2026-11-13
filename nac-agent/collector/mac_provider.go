@@ -11,7 +11,7 @@ import (
 )
 
 func (u UnixProvider) MacPosture(ctx context.Context, expected string) core.Posture {
-	p := Collect(u.Now())
+	p := collectSnapshot(u.Now())
 	p.Errors = nil
 	fw := ev(core.Unknown, "socketfilterfw")
 	if b, e := u.command(ctx, "/usr/bin/sw_vers"); e == nil {
@@ -69,6 +69,7 @@ func (u UnixProvider) MacPosture(ctx context.Context, expected string) core.Post
 	if ctx.Err() != nil {
 		p.TTL = 0
 	}
+	p.Adapters = RelevantAdapters(p.Adapters)
 	return p
 }
 func (u UnixProvider) MacInventory(ctx context.Context, software, user bool) core.Inventory {

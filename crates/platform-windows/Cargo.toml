@@ -8,6 +8,7 @@ license.workspace = true
 test-support = []
 
 [dependencies]
+adapter-filter = { path = "../adapter-filter" }
 serde.workspace = true
 serde_json.workspace = true
 lru.workspace = true

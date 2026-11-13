@@ -202,7 +202,7 @@ func adaptersNative(p *core.Posture) []core.Adapter {
 			case 24, 53, 131:
 				kind = adapterKind(name, boolPtr(false)) // loopback / tunnel
 			default:
-				kind = Classify(name)
+				kind = Classify(name + " " + windows.UTF16PtrToString(a.Description))
 			}
 			// IfType alone cannot prove physical hardware. PnP PhysicalAdapter evidence below.
 			mac := ""
@@ -239,7 +239,9 @@ func adaptersNative(p *core.Posture) []core.Adapter {
 			}
 			for i := range out {
 				if physical, ok := byIndex[indices[i]]; indices[i] != 0 && ok && physical != nil {
-					out[i].Kind = adapterKind(out[i].Name, physical)
+					if out[i].Kind != "virtual" {
+						out[i].Kind = adapterKind(out[i].Name, physical)
+					}
 					out[i].KindSource = "Win32_NetworkAdapter.PhysicalAdapter + adapter name"
 				}
 			}

@@ -15,6 +15,17 @@ use serde::Serialize;
 #[cfg(any(test, target_os = "windows"))]
 use serde_json::Value;
 
+#[cfg(any(test, target_os = "windows"))]
+fn adapter_gateway(a: &Value) -> bool {
+    a.get("DefaultIPGateway")
+        .and_then(Value::as_array)
+        .is_some_and(|ips| {
+            ips.iter()
+                .filter_map(Value::as_str)
+                .any(adapter_filter::usable_ip)
+        })
+}
+
 /// Collect detailed hardware inventory via a single PowerShell invocation.
 pub fn collect_hardware_inventory() -> HashMap<String, String> {
     let mut attrs = HashMap::new();
@@ -30,7 +41,7 @@ pub fn collect_hardware_inventory() -> HashMap<String, String> {
             "$disk=@(Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,MediaType,InterfaceType,PNPDeviceID);",
             "$vol=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,Size,FreeSpace,FileSystem);",
             "$gpu=Get-CimInstance Win32_VideoController | Select-Object -First 1 Name,AdapterRAM;",
-            "$net=@(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object Name,LinkSpeed,MacAddress);",
+            "$net=@(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' -ErrorAction SilentlyContinue | ForEach-Object {$n=Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue; [PSCustomObject]@{Name=$n.Name;Description=$_.Description;LinkSpeed=$n.LinkSpeed;MACAddress=$_.MACAddress;IPAddress=$_.IPAddress;DefaultIPGateway=$_.DefaultIPGateway}});",
             "$secureBoot=$null; try { $secureBoot=Confirm-SecureBootUEFI } catch { $secureBoot=$null };",
             "$tpm=Get-Tpm -ErrorAction SilentlyContinue | Select-Object -First 1 TpmPresent,TpmReady,ManufacturerVersion;",
             "[pscustomobject]@{",
@@ -274,10 +285,19 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
 
     // Network adapters
     if let Some(adapters) = v.get("adapters").and_then(Value::as_array) {
+        let mut adapters = adapters.iter().collect::<Vec<_>>();
+        adapters.sort_by_key(|a| !adapter_gateway(a));
+        let mut seen = std::collections::HashSet::new();
         let entries: Vec<NetAdapterEntry> = adapters
-            .iter()
+            .into_iter()
             .filter_map(|a| {
-                let name = a.get("Name").and_then(Value::as_str)?.trim().to_string();
+                let name = a
+                    .get("Name")
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.trim().is_empty())
+                    .or_else(|| a.get("Description").and_then(Value::as_str))?
+                    .trim()
+                    .to_string();
                 let speed = a
                     .get("LinkSpeed")
                     .and_then(Value::as_str)
@@ -286,10 +306,30 @@ fn parse_hardware_detail_json(raw: &str) -> HashMap<String, String> {
                     .to_string();
                 let mac = a
                     .get("MacAddress")
+                    .or_else(|| a.get("MACAddress"))
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .trim()
                     .to_string();
+                let mac = adapter_filter::normalize_mac(&mac)?;
+                let has_ip = a
+                    .get("IPAddress")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ips| {
+                        ips.iter()
+                            .filter_map(Value::as_str)
+                            .any(adapter_filter::usable_ip)
+                    });
+                if adapter_filter::virtual_name_for_os(
+                    "windows",
+                    a.get("Description").and_then(Value::as_str).unwrap_or(""),
+                ) || adapter_filter::virtual_name_for_os("windows", &name)
+                    || mac == "ac:de:48:00:11:22"
+                    || (!has_ip && !adapter_gateway(a))
+                    || !seen.insert(mac.clone())
+                {
+                    return None;
+                }
                 Some(NetAdapterEntry { name, speed, mac })
             })
             .collect();
@@ -479,6 +519,20 @@ mod tests {
     use super::parse_hardware_detail_json;
 
     #[test]
+    fn filters_hardware_adapters_and_prefers_gateway() {
+        let raw = r#"{"adapters":[
+            {"Name":"Ethernet","MacAddress":"00:e0:99:00:1e:fd","IPAddress":["192.0.2.1"]},
+            {"Name":"USB LAN","MacAddress":"00:e0:99:00:1e:fd","DefaultIPGateway":["192.0.2.254"]},
+            {"Name":"Ethernet 2","Description":"VMware Virtual Ethernet Adapter","MacAddress":"82:b9:7b:08:64:00","IPAddress":["192.0.2.2"]},
+            {"Name":"Wi-Fi","MacAddress":"14:7d:da:a4:0c:f4","IPAddress":["fe80::1"]}
+        ]}"#;
+        let attrs = parse_hardware_detail_json(raw);
+        let adapters: serde_json::Value = serde_json::from_str(&attrs["hw.net.adapters"]).unwrap();
+        assert_eq!(adapters.as_array().unwrap().len(), 1);
+        assert_eq!(adapters[0]["name"], "USB LAN");
+    }
+
+    #[test]
     fn parses_full_hardware_detail_json() {
         let raw = r#"{
             "cpu":{"Name":"Intel(R) Core(TM) i7-12700K","MaxClockSpeed":3600,"NumberOfCores":12,"NumberOfLogicalProcessors":20},
@@ -499,7 +553,7 @@ mod tests {
             "secure_boot":true,
             "tpm":{"TpmPresent":true,"TpmReady":true,"ManufacturerVersion":"2.0"},
             "adapters":[
-                {"Name":"Ethernet","LinkSpeed":"1 Gbps","MacAddress":"00-1A-2B-3C-4D-5E"}
+                {"Name":"Ethernet","LinkSpeed":"1 Gbps","MacAddress":"00-1A-2B-3C-4D-5E","IPAddress":["192.0.2.1"]}
             ]
         }"#;
 

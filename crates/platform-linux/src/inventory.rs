@@ -403,31 +403,15 @@ struct NetAdapterEntry {
 }
 
 fn collect_network_info(attrs: &mut HashMap<String, String>) {
-    let net_dir = match fs::read_dir("/sys/class/net") {
-        Ok(rd) => rd,
-        Err(_) => return,
-    };
-
     let mut adapters = Vec::new();
-
-    for entry in net_dir.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == "lo" {
-            continue;
-        }
-
-        let iface_path = entry.path();
+    for adapter in adapter_filter::relevant(adapter_filter::linux::snapshot()) {
+        let name = adapter.name;
+        let mac = adapter.mac;
+        let iface_path = std::path::Path::new("/sys/class/net").join(&name);
 
         let speed = read_trimmed(&iface_path.join("speed"))
             .map(|s| format!("{} Mbps", s))
             .unwrap_or_default();
-
-        let mac = read_trimmed(&iface_path.join("address")).unwrap_or_default();
-
-        // Skip interfaces with all-zero MAC
-        if mac == "00:00:00:00:00:00" {
-            continue;
-        }
 
         let driver = fs::read_link(iface_path.join("device/driver"))
             .ok()

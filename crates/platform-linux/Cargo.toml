@@ -11,6 +11,7 @@ test-binary-codec = []
 ebpf-libbpf = ["dep:libbpf-rs"]
 
 [dependencies]
+adapter-filter = { path = "../adapter-filter" }
 serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true

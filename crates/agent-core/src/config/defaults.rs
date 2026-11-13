@@ -13,43 +13,9 @@ const INVALID_MAC: &str = "00:00:00:00:00:00";
 /// physical device (`/sys/class/net/<iface>/device` exists).
 #[cfg(target_os = "linux")]
 fn detect_primary_mac() -> Option<String> {
-    use std::path::Path;
-
-    let net_dir = Path::new("/sys/class/net");
-    let entries = std::fs::read_dir(net_dir).ok()?;
-
-    let skip_prefixes = ["lo", "veth", "br-", "docker", "virbr"];
-
-    let mut physical: Option<String> = None;
-    let mut fallback: Option<String> = None;
-
-    for entry in entries.flatten() {
-        let iface = entry.file_name().to_string_lossy().into_owned();
-
-        if skip_prefixes.iter().any(|p| iface.starts_with(p)) {
-            continue;
-        }
-
-        let addr_path = net_dir.join(&iface).join("address");
-        let mac = match std::fs::read_to_string(&addr_path) {
-            Ok(m) => m.trim().to_string(),
-            Err(_) => continue,
-        };
-
-        // Skip zero MAC or broadcast
-        if mac.is_empty() || mac == "00:00:00:00:00:00" || mac == "ff:ff:ff:ff:ff:ff" {
-            continue;
-        }
-
-        let has_device = net_dir.join(&iface).join("device").exists();
-        if has_device && physical.is_none() {
-            physical = Some(mac);
-        } else if fallback.is_none() {
-            fallback = Some(mac);
-        }
-    }
-
-    physical.or(fallback)
+    adapter_filter::relevant(adapter_filter::linux::snapshot())
+        .first()
+        .map(|a| a.mac.clone())
 }
 
 #[cfg(target_os = "linux")]
@@ -59,32 +25,12 @@ fn default_data_root() -> &'static str {
 
 /// Detect the MAC address of the primary network adapter on Windows.
 ///
-/// Queries WMI via PowerShell for IP-enabled adapters and returns the first
-/// non-null MAC address.  Falls back to `None` if PowerShell fails.
+/// Queries WMI via the inventory collector for IP-enabled adapters and returns the first
+/// relevant unicast MAC, preferring a default gateway. Returns `None` on failure.
 #[cfg(target_os = "windows")]
 fn detect_primary_mac() -> Option<String> {
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' | Select-Object -First 1 -ExpandProperty MACAddress)",
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let mac = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    if mac.is_empty() || mac == "00:00:00:00:00:00" {
-        return None;
-    }
-
-    // WMI returns "AA-BB-CC-DD-EE-FF" — normalise to "aa:bb:cc:dd:ee:ff"
-    Some(mac.replace('-', ":").to_ascii_lowercase())
+    let adapters = platform_windows::inventory::network::collect_network_adapters();
+    adapters.into_iter().find_map(|a| a.mac_address)
 }
 
 #[cfg(target_os = "windows")]
@@ -115,6 +61,18 @@ fn detect_primary_mac() -> Option<String> {
     }
 
     let _guard = IfAddrsGuard(addrs);
+    let route = std::process::Command::new("/sbin/route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().find_map(|l| {
+                l.trim()
+                    .strip_prefix("interface:")
+                    .map(|v| v.trim().to_string())
+            })
+        });
     let mut best: Option<(u8, String)> = None;
     let mut current = addrs;
 
@@ -127,7 +85,7 @@ fn detect_primary_mac() -> Option<String> {
         }
 
         let flags = ifa.ifa_flags as i32;
-        if flags & libc::IFF_UP == 0 || flags & libc::IFF_LOOPBACK != 0 {
+        if flags & libc::IFF_UP == 0 || flags & (libc::IFF_LOOPBACK | libc::IFF_POINTOPOINT) != 0 {
             continue;
         }
 
@@ -148,7 +106,11 @@ fn detect_primary_mac() -> Option<String> {
             continue;
         };
 
-        let score = score_macos_interface(&name, flags);
+        let score = if route.as_deref() == Some(name.as_str()) {
+            0
+        } else {
+            score_macos_interface(&name, flags).saturating_add(1)
+        };
         match &best {
             Some((best_score, _)) if score >= *best_score => {}
             _ => best = Some((score, mac)),
@@ -188,7 +150,7 @@ fn normalize_mac_bytes(bytes: &[u8]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(":");
 
-    if mac == INVALID_MAC || mac == "ff:ff:ff:ff:ff:ff" {
+    if adapter_filter::normalize_mac(&mac).is_none() || mac == "ac:de:48:00:11:22" {
         return None;
     }
 
@@ -197,11 +159,7 @@ fn normalize_mac_bytes(bytes: &[u8]) -> Option<String> {
 
 #[cfg(any(test, target_os = "macos"))]
 fn should_skip_macos_interface(name: &str) -> bool {
-    [
-        "lo", "awdl", "llw", "utun", "bridge", "p2p", "anpi", "stf", "gif",
-    ]
-    .iter()
-    .any(|prefix| name.starts_with(prefix))
+    adapter_filter::virtual_name_for_os("macos", name)
 }
 
 #[cfg(any(test, target_os = "macos"))]

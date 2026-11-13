@@ -22,7 +22,7 @@ pub struct NetworkAdapter {
 pub fn collect_network_adapters() -> Vec<NetworkAdapter> {
     #[cfg(target_os = "windows")]
     {
-        let cmd = "Get-CimInstance Win32_NetworkAdapterConfiguration -Filter \"IPEnabled=TRUE\" | Select-Object Description,MACAddress,IPAddress,DHCPEnabled | ConvertTo-Json -Compress";
+        let cmd = "Get-CimInstance Win32_NetworkAdapterConfiguration -Filter \"IPEnabled=TRUE\" | Select-Object Description,@{n='Name';e={(Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue).Name}},MACAddress,IPAddress,DHCPEnabled,DefaultIPGateway | ConvertTo-Json -Compress";
         if let Some(json) = run_powershell(cmd) {
             return parse_network_adapters_json(&json);
         }
@@ -64,6 +64,9 @@ fn parse_network_adapters_json(raw: &str) -> Vec<NetworkAdapter> {
         single => vec![single],
     };
 
+    let mut records = records;
+    records.sort_by_key(|e| !has_gateway(e));
+    let mut seen = std::collections::HashSet::new();
     records
         .into_iter()
         .filter_map(|entry| {
@@ -83,12 +86,26 @@ fn parse_network_adapters_json(raw: &str) -> Vec<NetworkAdapter> {
                 })
                 .unwrap_or_default();
 
-            Some(NetworkAdapter {
-                name,
-                mac_address: entry
+            let mac = adapter_filter::normalize_mac(
+                entry
                     .get("MACAddress")
                     .and_then(Value::as_str)
-                    .map(ToString::to_string),
+                    .unwrap_or(""),
+            )?;
+            if adapter_filter::virtual_name_for_os(
+                "windows",
+                entry.get("Name").and_then(Value::as_str).unwrap_or(""),
+            ) || adapter_filter::virtual_name_for_os("windows", &name)
+                || mac == "ac:de:48:00:11:22"
+                || (!has_gateway(&entry)
+                    && !ip_addresses.iter().any(|ip| adapter_filter::usable_ip(ip)))
+                || !seen.insert(mac.clone())
+            {
+                return None;
+            }
+            Some(NetworkAdapter {
+                name,
+                mac_address: Some(mac),
                 ip_addresses,
                 dhcp_enabled: entry
                     .get("DHCPEnabled")
@@ -99,9 +116,27 @@ fn parse_network_adapters_json(raw: &str) -> Vec<NetworkAdapter> {
         .collect()
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn has_gateway(entry: &Value) -> bool {
+    entry
+        .get("DefaultIPGateway")
+        .and_then(Value::as_array)
+        .is_some_and(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .any(adapter_filter::usable_ip)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_network_adapters_json;
+
+    #[test]
+    fn rejects_virtual_inventory() {
+        let raw = r#"[{"Description":"Intel NIC","MACAddress":"00:e0:99:00:1e:fd","IPAddress":["192.0.2.1"]},{"Description":"vEthernet (WSL)","MACAddress":"82:b9:7b:08:64:00","IPAddress":["192.0.2.2"]}]"#;
+        assert_eq!(parse_network_adapters_json(raw).len(), 1);
+    }
 
     #[test]
     fn parses_network_adapters_json() {
