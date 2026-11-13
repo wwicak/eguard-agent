@@ -183,6 +183,12 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        super::update_window::cleanup(
+            &super::command_pipeline::paths::resolve_agent_data_dir(),
+            super::now_unix(),
+            0,
+        );
         if let Some(bundle_public_key) = config
             .detection_bundle_public_key
             .as_deref()

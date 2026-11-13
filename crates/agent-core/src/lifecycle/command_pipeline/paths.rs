@@ -22,7 +22,7 @@ pub(super) fn resolve_network_profile_dir() -> PathBuf {
     }
 }
 
-pub(super) fn resolve_agent_data_dir() -> PathBuf {
+pub(in crate::lifecycle) fn resolve_agent_data_dir() -> PathBuf {
     if let Ok(raw) = std::env::var("EGUARD_AGENT_DATA_DIR") {
         if !raw.trim().is_empty() {
             return PathBuf::from(raw.trim());

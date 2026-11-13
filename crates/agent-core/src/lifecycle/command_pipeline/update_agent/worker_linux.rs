@@ -25,6 +25,8 @@ pub(super) fn spawn_update_worker(
     write_linux_update_worker_script(&script_path)?;
 
     let base_args = vec![
+        "--authenticated-command".to_string(),
+        request.command_authenticated.to_string(),
         "--command-id".to_string(),
         command_id.to_string(),
         "--update-dir".to_string(),
@@ -89,6 +91,7 @@ fn write_linux_update_worker_script(path: &Path) -> Result<(), String> {
     const SCRIPT: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
 
+AUTHENTICATED_COMMAND="false"
 COMMAND_ID=""
 UPDATE_DIR=""
 VERSION=""
@@ -119,6 +122,22 @@ fail_outcome() {
   echo "$detail" >&2
   exit 1
 }
+
+# Visible update window, not a blanket suppression: no marker before checksum verification.
+write_update_window() (
+  local root="${UPDATE_DIR%/update}" mode tmp
+  [[ "$AUTHENTICATED_COMMAND" == true ]] || exit 1
+  [[ ${#COMMAND_ID} -le 128 && ${#VERSION} -le 128 && "$COMMAND_ID" =~ ^[a-zA-Z0-9._-]+$ && "$VERSION" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
+  [[ ! -L "$root" ]] && cd -P "$root" || exit 1
+  mode="$(stat -c %a .)" || exit 1
+  [[ "$(stat -c %u .)" == 0 ]] && (( (8#$mode & 022) == 0 )) || exit 1
+  mkdir -m 0700 update-restart 2>/dev/null || true
+  [[ ! -L update-restart ]] && cd update-restart || exit 1
+  [[ "$(stat -c '%u:%a' .)" == '0:700' ]] || exit 1
+  tmp="$(mktemp .window.XXXXXX)" || exit 1
+  printf '{"command_id":"%s","target_version":"%s","expires_at":%s}\n' "$COMMAND_ID" "$VERSION" "$(( $(date +%s) + 900 ))" > "$tmp" \
+    && mv -fT "$tmp" window.json || { rm -f "$tmp"; exit 1; }
+)
 
 normalize_version() {
   printf '%s' "${1:-}" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^[vV]//'
@@ -392,6 +411,7 @@ restart_and_confirm_update() {
       # is actually executing the restored inode before claiming recovery — not a
       # single is-active sample (crash loops flicker active).
       systemctl reset-failed eguard-agent 2>/dev/null || true
+      write_update_window || echo "agent update: could not record rollback window" >&2
       systemctl kill --kill-who=main -s TERM eguard-agent 2>/dev/null || true
       systemctl start --no-block eguard-agent 2>/dev/null || true
       local r1="" r2="" ra="" recovered="no" rb_i
@@ -424,6 +444,10 @@ restart_and_confirm_update() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --authenticated-command)
+      AUTHENTICATED_COMMAND="${2:-false}"
+      shift 2
+      ;;
     --command-id)
       COMMAND_ID="${2:-}"
       shift 2
@@ -503,6 +527,7 @@ curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 900 "$PACKA
 echo "$CHECKSUM  $tmp_path" | sha256sum --check --status || fail_outcome "package checksum verification failed for $PACKAGE_URL"
 mv -f "$tmp_path" "$pkg_path"
 
+write_update_window || echo "agent update: could not record update window" >&2
 if [[ "$FORMAT" == "deb" ]]; then
   # Non-interactive: an existing /etc/eguard-agent/agent.conf (enrolled state)
   # must be kept without a conffile prompt, which otherwise aborts dpkg with
