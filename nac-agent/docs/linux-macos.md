@@ -77,6 +77,7 @@ Unknown/error tidak berubah menjadi bukti compliant; cancel tidak memperpanjang 
 |---|---|---|
 | Host/OS | hostname, os-release | scutil ComputerName, sw_vers |
 | Adapter | net.Interfaces, default IPv4 /proc/net/route | net.Interfaces, route default interface |
+| VPN opt-in (`vpn`) | raw net.Interfaces, UP + non-link-local IP; wg/tun/tailscale/zt/IPsec/PPP | raw net.Interfaces, UP + IPv4 non-link-local atau IPv6 global unicast; utun/IPsec/PPP |
 | Domain | sssd domains, krb5 default_realm, realm list | dsconfigad -show |
 | Firewall | nft ruleset, ufw status, firewalld state | socketfilterfw global state |
 | Disk encryption | root dm UUID CRYPT- (field wire bitlocker_os, source luks) | FileVault fdesetup |
@@ -95,6 +96,31 @@ unit/path didukung. Third-party presence bukan bukti running/updated. Status uni
 command error tetap Unknown (termasuk exit nonzero inactive). XProtect mtime bukan
 jaminan signature vendor terbaru dan running tetap Unknown. App launchd-only belum
 dideteksi. Gatekeeper dikirim sebagai evidence tambahan, bukan firewall jaringan.
+
+VPN evidence terpisah dari `adapters` (tunnel tetap bukan aset). Hanya dikirim
+bila payload signed bootstrap config v1 memuat `"report_vpn":"on"`; absent atau
+`"off"` menghilangkan seluruh field `vpn` agar kompatibel dengan validator server
+lama. Server/operator hanya boleh menandatangani ON setelah validator posture
+server mendukung field ini. Nilai lain ditolak saat verifikasi config. Tidak ada
+flag lokal/env atau pemeriksaan proses/aktivitas pengguna.
+
+`vpn.connected` = `yes` bila interface VPN/tunnel UP dengan IP usable, `no` bila
+snapshot berhasil tanpa koneksi, `unknown` bila enumerasi gagal (atau alamat VPN
+UP tidak dapat dibaca tanpa bukti koneksi lain). `products` berisi heuristik nama/
+deskripsi interface aktif, dedup maksimal 8 nama tetap (masing-masing <=64 byte),
+bukan bukti produk/proses berjalan. `tun*` dilabeli `OpenVPN/TUN`, Wintun generik
+`Wintun-based VPN`. Pada Windows sumbernya `GetAdaptersAddresses` yang sudah
+tersedia; Unix `net.Interfaces`. Tidak ada command tambahan.
+
+macOS `utun0..utun3` sering milik sistem/iCloud Private Relay: tanpa IP atau hanya
+`fe80::` tidak dihitung. utun UP dengan IPv4 non-link-local atau IPv6 global
+unicast dihitung, tetapi tetap tidak dapat membedakan Private Relay dari VPN
+pengguna. Tidak mendeteksi VPN tanpa tunnel yang dikenali (mis. browser proxy).
+Contoh bagian JSON opt-in:
+
+```json
+{"vpn":{"connected":"yes","products":["macOS VPN (utun)"],"source":"net.Interfaces"}}
+```
 
 Produk NAC-only posture/inventory/status: tidak ada EDR, kernel driver, remote shell,
 arbitrary command execution atau monitoring aktivitas pengguna.

@@ -189,6 +189,7 @@ func adaptersNative(p *core.Posture) []core.Adapter {
 			return nil
 		}
 		var out []core.Adapter
+		var vpnInterfaces []vpnInterface
 		var indices []uint32
 		ifaces, ifaceErr := net.Interfaces()
 		if ifaceErr != nil {
@@ -223,8 +224,21 @@ func adaptersNative(p *core.Posture) []core.Adapter {
 				}
 			}
 			out = append(out, item)
+			vi := vpnInterface{name: name + " " + windows.UTF16PtrToString(a.Description), up: a.OperStatus == 1, tunnel: a.IfType == 131 || a.IfType == 23}
+			// Reuse the already acquired native addresses, including IPv6-only interfaces.
+			for addr := a.FirstUnicastAddress; addr != nil; addr = addr.Next {
+				if ip := addr.Address.IP(); ip != nil {
+					vi.addresses = append(vi.addresses, ip.String())
+				}
+			}
+			vpnInterfaces = append(vpnInterfaces, vi)
 		}
+		p.VPN = vpnSnapshot("windows", vpnInterfaces, nil, "GetAdaptersAddresses")
 		if len(out) >= 512 {
+			p.VPN.Error = "adapter count truncated at 512"
+			if p.VPN.Connected != core.Yes {
+				p.VPN.Connected = core.Unknown
+			}
 			p.Errors = append(p.Errors, "adapter count truncated at 512")
 		}
 		// Read PnP hardware classification and locally configured default routes via WMI.

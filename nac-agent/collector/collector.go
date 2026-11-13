@@ -31,7 +31,9 @@ func collectSnapshot(now time.Time) core.Posture {
 	}
 	p.Errors = append(p.Errors, "domain and AV provider APIs not integrated; no compliance decision permitted")
 	interfaces, err := net.Interfaces()
+	var vpnInterfaces []vpnInterface
 	if err != nil {
+		p.VPN = vpnSnapshot(runtime.GOOS, nil, err, "net.Interfaces")
 		p.Errors = append(p.Errors, "interface enumeration failed")
 		return p
 	}
@@ -41,18 +43,22 @@ func collectSnapshot(now time.Time) core.Posture {
 			a.Kind = "virtual"
 		}
 		addresses, e := iface.Addrs()
+		vi := vpnInterface{name: iface.Name, up: iface.Flags&net.FlagUp != 0, tunnel: iface.Flags&net.FlagPointToPoint != 0, err: e}
 		if e != nil {
 			p.Errors = append(p.Errors, "addresses unavailable for "+iface.Name)
 		} else {
 			for _, addr := range addresses {
 				a.Addresses = append(a.Addresses, addr.String())
+				vi.addresses = append(vi.addresses, addr.String())
 			}
 		}
 		if runtime.GOOS == "linux" && !linuxPhysicalInterface("/sys/class/net", iface.Name, 0) {
 			a.Kind = "virtual"
 		}
 		p.Adapters = append(p.Adapters, a)
+		vpnInterfaces = append(vpnInterfaces, vi)
 	}
+	p.VPN = vpnSnapshot(runtime.GOOS, vpnInterfaces, nil, "net.Interfaces")
 	acquireDefaultRoute(&p)
 	return p
 }

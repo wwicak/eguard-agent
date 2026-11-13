@@ -11,6 +11,9 @@ func virtualAdapterName(name string) bool { return virtualAdapterNameForOS(runti
 
 func virtualAdapterNameForOS(osName, name string) bool {
 	n := strings.ToLower(name)
+	if vpnProduct(osName, name) != "" {
+		return true
+	}
 	var prefixes []string
 	switch osName {
 	case "darwin":

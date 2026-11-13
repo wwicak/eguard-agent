@@ -153,6 +153,19 @@ func ValidatePosture(p core.Posture, now time.Time) error {
 			return errors.New("collector firewall evidence invalid")
 		}
 	}
+	if p.VPN != nil {
+		v := p.VPN
+		if !validTri(v.Connected) || len(v.Products) > 8 || v.Source == "" || len(v.Source) > 128 || len(v.Error) > 256 {
+			return errors.New("collector VPN evidence invalid")
+		}
+		seen := map[string]bool{}
+		for _, product := range v.Products {
+			if product == "" || len(product) > 64 || seen[product] {
+				return errors.New("collector VPN product invalid")
+			}
+			seen[product] = true
+		}
+	}
 	if len(p.Hostname) > 63 {
 		return errors.New("collector hostname invalid")
 	}

@@ -94,3 +94,49 @@ Agent-core full compile/tests require existing libelf development headers/build
 infrastructure. Existing Linux hashing failure needs a separate investigation.
 Native macOS/Windows execution and BSSB device/server observations are still
 needed; no claim of testing on those devices or changing existing server assets.
+
+## NAC VPN summary follow-up (NAC Go only)
+
+Plan/review (completed): inspect signed config and raw collectors; write failing
+classification/config tests; implement bounded evidence and signed send gate;
+verify adapter separation, race suite and cross-target vet; document and commit.
+No EDR/Rust or tasks/todo.md changes; no push.
+
+- Added optional `core.Posture.VPN *VPNEvidence` (`json:"vpn,omitempty"`).
+  JSON example: `{"vpn":{"connected":"yes","products":["WireGuard","OpenVPN"],"source":"GetAdaptersAddresses"}}`.
+  Successful negative: `{"vpn":{"connected":"no","source":"net.Interfaces"}}`.
+  Failure: `{"vpn":{"connected":"unknown","source":"net.Interfaces","error":"interface enumeration failed"}}`.
+  These are posture fragments; all existing posture fields remain unchanged.
+- Unix Collect, Linux provider and macOS provider share `collectSnapshot`, which
+  computes VPN from raw interfaces/UP/address results before route enrichment and
+  RelevantAdapters. Windows native uses the already collected GetAdaptersAddresses
+  FriendlyName/Description, OperStatus and unicast addresses before filtering.
+  Native failure retains the independently acquired net.Interfaces evidence.
+- Only active, usable-IP interfaces contribute product labels; unknown generic
+  point-to-point/tunnel interfaces can prove Connected without a product label.
+  Product names are fixed, deduped, capped at 8 and all <=64 bytes. Shared product
+  name recognition also excludes recognized VPNs from asset adapters. Boundary
+  validates tri-state, bounded source/error and product lengths/duplicates.
+- No existing VPN capability was found. Reused verified signed bootstrap config
+  v1 with optional `report_vpn` string `on|off`, default OFF, following inventory
+  opt-ins. Invalid types/values reject the signed config. No unsigned setting can
+  enable it. The final runtime Send wrapper clears VPN unless verified ON, covering
+  retries too; OFF sends no `vpn` key (not null), preserving strict legacy 0.6.3
+  server posture validators. This is an explicit server capability assertion, not
+  automatic negotiation: issuer must upgrade server validators before signing ON.
+  No server changes in this commit; existing older agent binaries will not accept
+  this new config key, so only issue it to supporting agent versions.
+- macOS utun0..3 with no IP/only fe80:: do not count; utun UP with non-link-local
+  IPv4/global-unicast IPv6 counts but may still be system/iCloud Private Relay.
+  Interface evidence cannot prove user VPN intent or identify a process. No new
+  commands, process queries or user activity access added.
+- TDD RED: collector/bootstrap tests failed compilation before implementation
+  (missing VPN helpers/ReportVPN). GREEN: Mac utun0..3 + active utun4, Mac no VPN,
+  Windows WireGuard/TAP, Linux wg/tailscale, enumeration failure, down/link-local,
+  dedup/cap/product classification, tunnel asset exclusion with valid MAC/IP,
+  signed opt-in default/invalid values, final send JSON absent/present gate.
+- Verification PASS: `/usr/local/go/bin/go test -race -count=1 -p 1 ./...`;
+  `gofmt -l .` empty; `GOOS=windows go vet ./...` and
+  `GOOS=darwin go vet ./...` exit 0; `git diff --check` clean.
+  Native Windows/macOS runtime/server end-to-end not run; cross-target vet and
+  platform-independent synthetic fixtures are not native device validation.

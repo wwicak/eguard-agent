@@ -98,7 +98,15 @@ type DefenderEvidence struct {
 	Realtime          Evidence `json:"realtime"`
 	SignatureAgeHours *uint32  `json:"signature_age_hours"`
 }
+type VPNEvidence struct {
+	Connected Tri      `json:"connected"`
+	Products  []string `json:"products,omitempty"`
+	Source    string   `json:"source"`
+	Error     string   `json:"error,omitempty"`
+}
+
 type Posture struct {
+	VPN        *VPNEvidence        `json:"vpn,omitempty"`
 	Hostname   string              `json:"hostname,omitempty"`
 	Device     *DeviceEvidence     `json:"device,omitempty"`
 	Defender   *DefenderEvidence   `json:"defender,omitempty"`

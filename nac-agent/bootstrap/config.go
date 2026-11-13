@@ -27,6 +27,7 @@ func (v Verified) AntiTamper() string {
 
 type Verified struct {
 	antiTamper   string
+	reportVPN    bool    // signed server capability; default off
 	inventory    [2]bool // collect_software, collect_user (signed; default off)
 	binding      lifecycle.Binding
 	revision     uint64
@@ -39,6 +40,8 @@ type Verified struct {
 
 // CollectSoftware / CollectUser return the signed opt-in selections. Absent
 // fields (older configs) mean off.
+func (v Verified) ReportVPN() bool { return v.reportVPN }
+
 func (v Verified) CollectSoftware() bool { return v.inventory[0] }
 func (v Verified) CollectUser() bool     { return v.inventory[1] }
 
@@ -166,6 +169,17 @@ func Verify(raw []byte, pin ed25519.PublicKey, b lifecycle.Binding, floor uint64
 			return bad, invalid
 		}
 	}
+	reportVPN := false
+	if _, present := parsed["report_vpn"]; present {
+		fields += " report_vpn"
+		switch text(parsed, "report_vpn") {
+		case "on":
+			reportVPN = true
+		case "off":
+		default:
+			return bad, invalid
+		}
+	}
 	var inventory [2]bool
 	for i, k := range []string{"collect_software", "collect_user"} {
 		if _, present := parsed[k]; present {
@@ -188,7 +202,7 @@ func Verify(raw []byte, pin ed25519.PublicKey, b lifecycle.Binding, floor uint64
 			return bad, invalid
 		}
 	}
-	v := Verified{antiTamper: mode, inventory: inventory, binding: b, revision: number(m, "revision"), origin: text(m, "https_origin"), path: text(m, "journal_path"), ca: b64(text(m, "server_ca_der_b64")), keys: map[string]ed25519.PublicKey{}}
+	v := Verified{reportVPN: reportVPN, antiTamper: mode, inventory: inventory, binding: b, revision: number(m, "revision"), origin: text(m, "https_origin"), path: text(m, "journal_path"), ca: b64(text(m, "server_ca_der_b64")), keys: map[string]ed25519.PublicKey{}}
 	if v.revision < floor || v.path != path {
 		return bad, invalid
 	}

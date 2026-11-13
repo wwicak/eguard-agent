@@ -152,7 +152,7 @@ func Build(in Inputs) (servicehost.Runner, func() error, error) {
 	if e != nil {
 		return fail()
 	}
-	coordinator := &nacruntime.Coordinator{Store: store, Keys: keys, Binding: b, Now: credentialClock, Collect: in.Collect, Send: client.SendPosture, Interval: interval, Backoff: backoff, CollectTimeout: collectTimeout, SendTimeout: sendTimeout}
+	coordinator := &nacruntime.Coordinator{Store: store, Keys: keys, Binding: b, Now: credentialClock, Collect: in.Collect, Send: vpnPostureSender(v.ReportVPN(), client.SendPosture), Interval: interval, Backoff: backoff, CollectTimeout: collectTimeout, SendTimeout: sendTimeout}
 	var mu sync.Mutex
 	running, closed := false, false
 	var closeErr error
