@@ -85,5 +85,51 @@ Anti-Tamper meningkatkan usaha, **bukan kekebalan**. Administrator lokal/SYSTEM 
 
 - Build ini TEST-UNSIGNED; SmartScreen/AV dapat memberi peringatan.
 - Uji runtime dilakukan pada Windows 10 Pro 19045 (VM tester). Windows 11 belum diverifikasi.
-- Upgrade in-place belum didukung: installer menolak jika sudah terpasang (uninstall dulu).
+- INSTALL baru tetap menolak existing; gunakan jalur upgrade terpisah di bawah.
 - Perubahan jam: rollback jam terdeteksi in-process; latch jam tahan reboot belum ada.
+
+## Upgrade in-place (admin lokal)
+
+Gunakan installer/paket versi baru dari publisher yang sama, dengan elevasi/root.
+Tidak perlu izin server atau kode enrollment baru. Upgrade hanya mengganti biner;
+konfigurasi, identitas, kredensial (termasuk CNG), journal, mode Temporary/Permanent,
+expiry dan pilihan Anti-Tamper dipertahankan: tidak reset dan tidak diperpanjang.
+Uninstall tetap mengikuti aturan lama: Anti-Tamper ON memerlukan authorization signed.
+
+- Cek versi: `eguard-nac version` (Unix), `nac-setup version` (Windows).
+- Versi baru wajib semver valid dan lebih tinggi. Downgrade ditolak. Versi sama
+  hanya dengan opsi eksplisit reinstall, bukan enrollment ulang. Biner legacy tanpa
+  stamp/perintah version (termasuk paket lama 0.6.1), atau `0.0.0-dev`, dianggap
+  versi tidak diketahui dan lebih lama dari versi baru valid apa pun.
+- Windows: jalankan installer baru sebagai Administrator; service eGuardNAC dan
+  root provisioning existing mengarahkan wizard ke upgrade tanpa halaman kode.
+  Alternatif: `nac-setup upgrade <service.exe-baru> [--reinstall]`. Preflight
+  memverifikasi provisioning signed dan konfigurasi service persis; stop, backup
+  `.prev`, copy, start dan readiness stabil 10 detik. Kegagalan replacement/start/
+  readiness mencoba mengembalikan biner lama dan start lagi. Error rollback/DACL
+  dilaporkan: jangan menganggap rollback berhasil hanya karena helper selesai.
+  Anti-Tamper ON: DACL dilonggarkan sementara untuk stop dan wajib dipulihkan;
+  pilihan bootstrap tidak diubah. `.prev` terakhir disimpan untuk recovery.
+- Linux: `sudo dpkg -i <paket-baru.deb>` atau `sudo rpm -U <paket-baru.rpm>`.
+  Hook upgrade stop tanpa menghapus state/disable service, kemudian daemon-reload
+  dan start hanya bila enrolled. Install fresh tidak start. Untuk versi sama,
+  `sudo env EGUARD_NAC_REINSTALL=1 dpkg -i ...` (atau `rpm -U --replacepkgs ...`).
+  Remove/purge tetap menolak selama enrolled. **Batas migrasi legacy:** prerm dari
+  paket lama yang sudah terpasang dan menolak argumen upgrade tidak dapat diperbaiki
+  secara retroaktif oleh paket baru; jalur migrasi paket tersebut perlu diuji dan
+  dikelola admin sebelum rollout, tanpa menghapus state atau bypass uninstall.
+- macOS: `sudo installer -pkg <paket-baru.pkg> -target /`. Preinstall bootout
+  daemon enrolled (error not-loaded diabaikan), postinstall memperbaiki symlink CLI
+  dan bootstrap kembali. Fresh install tidak load. Reinstall versi sama memakai
+  `sudo env EGUARD_NAC_REINSTALL=1 installer -pkg ... -target /`.
+- Paket Unix memeriksa versi sebelum unpack; gunakan package manager standar,
+  jangan copy biner manual atau menjalankan hook terpisah. OS package trust/signing
+  adalah batas publisher; helper bukan pengganti verifikasi signature distribusi.
+  Build evaluasi unsigned tetap bukan bukti publisher identity.
+
+**Verifikasi upgrade saat ini hanya unit/fake/sandbox dan cross-build. Runtime
+upgrade pada Windows, Linux dan macOS nyata belum diverifikasi.** Validasi paket
+signed, service protection, readiness, failure recovery, dan preservation pada VM
+berizin wajib sebelum produksi. Unix package manager tidak menyediakan rollback
+biner otomatis seperti helper Windows; kegagalan start harus dipulihkan admin
+menggunakan backup/paket yang telah diverifikasi tanpa mengubah provisioning.

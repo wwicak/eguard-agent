@@ -14,7 +14,7 @@ PAY=$OUT/payload
 rm -rf "$PAY"; mkdir -p "$PAY"
 ENROLL_URL="${NAC_ENROLL_URL:-}"; ENROLL_CA="${NAC_ENROLL_CA_B64:-}"
 if [[ -n "$ENROLL_URL" ]]; then [[ "$ENROLL_URL" =~ ^https://[A-Za-z0-9.:-]+$ && -n "$ENROLL_CA" ]] || { echo "NAC_ENROLL_URL needs https://host:port and NAC_ENROLL_CA_B64" >&2; exit 2; }; fi
-LD="-s -w -X eguard-nac-agent/provision.BootstrapPinHex=$PIN -X eguard-nac-agent/selfenroll.ServerURL=$ENROLL_URL -X eguard-nac-agent/selfenroll.ServerCAB64=$ENROLL_CA"
+LD="-X eguard-nac-agent/buildinfo.Version=$VERSION -s -w -X eguard-nac-agent/provision.BootstrapPinHex=$PIN -X eguard-nac-agent/selfenroll.ServerURL=$ENROLL_URL -X eguard-nac-agent/selfenroll.ServerCAB64=$ENROLL_CA"
 export GOOS=windows GOARCH=amd64 CGO_ENABLED=0
 $GO build -trimpath -ldflags "$LD" -o "$PAY/eguard-nac-service.exe" ./cmd/nac-service
 $GO build -trimpath -ldflags "$LD" -o "$PAY/nac-setup.exe" ./cmd/nac-setup

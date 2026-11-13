@@ -85,10 +85,12 @@ jobs:
         with:
           go-version-file: nac-agent/go.mod
       - name: Build universal binary (CI only)
+        env:
+          VERSION: ${{ needs.test.outputs.version }}
         run: |
           mkdir -p dist/unix
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -o "dist/unix/eguard-nac-darwin-$arch" ./cmd/nac-service
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "-X eguard-nac-agent/buildinfo.Version=$VERSION" -o "dist/unix/eguard-nac-darwin-$arch" ./cmd/nac-service
           done
           lipo -create dist/unix/eguard-nac-darwin-amd64 dist/unix/eguard-nac-darwin-arm64 -output dist/unix/eguard-nac-darwin-universal
       - name: Import optional identities
@@ -142,10 +144,11 @@ jobs:
           CGO_ENABLED: '0'
           GOOS: windows
           GOARCH: amd64
+          VERSION: ${{ needs.test.outputs.version }}
         run: |
           mkdir -p dist/windows
-          go build -trimpath -o dist/windows/nac-service.exe ./cmd/nac-service
-          go build -trimpath -o dist/windows/nac-setup.exe ./cmd/nac-setup
+          go build -trimpath -ldflags "-X eguard-nac-agent/buildinfo.Version=$VERSION" -o dist/windows/nac-service.exe ./cmd/nac-service
+          go build -trimpath -ldflags "-X eguard-nac-agent/buildinfo.Version=$VERSION" -o dist/windows/nac-setup.exe ./cmd/nac-setup
       - uses: actions/upload-artifact@v4
         with:
           name: windows-binaries

@@ -11,6 +11,8 @@
 package main
 
 import (
+	"eguard-nac-agent/buildinfo"
+	"eguard-nac-agent/upgrade"
 	"fmt"
 	"os"
 	"strings"
@@ -27,10 +29,20 @@ import (
 func elevated() bool { return windows.GetCurrentProcessToken().IsElevated() }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "version" {
+		fmt.Println(buildinfo.Version)
+		return
+	}
 	if elevated() {
 		enableOwnerPrivileges()
 	}
 	switch {
+	case (len(os.Args) == 3 || len(os.Args) == 4 && os.Args[3] == "--reinstall") && os.Args[1] == "upgrade":
+		if e := upgrade.Run(&upgrade.Windows{Source: os.Args[2], Reinstall: len(os.Args) == 4}); e != nil {
+			fmt.Fprintln(os.Stderr, "Upgrade failed:", e)
+			os.Exit(1)
+		}
+		fmt.Println("eGuard NAC upgraded; provisioning preserved.")
 	case len(os.Args) == 5 && os.Args[1] == "install":
 		e := setupflow.Install(setupflow.Windows{SourceBinary: os.Args[2], Bootstrap: os.Args[3], Activation: os.Args[4]})
 		if e != nil {
@@ -100,6 +112,7 @@ func main() {
 		}
 		fmt.Println("eGuard NAC removed. Files in use are deleted at next restart.")
 	default:
+		fmt.Fprintln(os.Stderr, "       nac-setup version | upgrade <service.exe> [--reinstall]")
 		fmt.Fprintln(os.Stderr, "usage: nac-setup install <service.exe> <bootstrap.json> <activation.json>")
 		fmt.Fprintln(os.Stderr, "       nac-setup install-code <service.exe> <enrollment code>")
 		fmt.Fprintln(os.Stderr, "       nac-setup install-from-name <service.exe> <installer-filename>")

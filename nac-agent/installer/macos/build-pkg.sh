@@ -6,14 +6,30 @@ VERSION=${VERSION:-0.0.0-dev}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/root/Library/eGuard NAC" "$WORK/root/Library/LaunchDaemons" dist/unix
-cp "${BINARY:-dist/unix/eguard-nac-darwin-universal}" "$WORK/root/Library/eGuard NAC/eguard-nac-service"
+# Build stamped universal payload unless the publisher provides one explicitly.
+if [[ -z "${BINARY:-}" ]]; then
+ GO=${GO:-go}
+ for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=darwin GOARCH=$arch "$GO" build -trimpath -ldflags "-X eguard-nac-agent/buildinfo.Version=$VERSION" -o "$WORK/nac-$arch" ./cmd/nac-service
+ done
+ lipo -create "$WORK/nac-amd64" "$WORK/nac-arm64" -output "$WORK/universal"
+ BINARY="$WORK/universal"
+fi
+mkdir -p "$WORK/scripts"
+cp installer/macos/scripts/* "$WORK/scripts/"
+{
+ printf '#!/bin/sh\nNAC_NEW_VERSION=%s\nNAC_INSTALLED_BINARY="/Library/eGuard NAC/eguard-nac-service"\n' "$VERSION"
+ cat packaging/version-policy.sh installer/macos/scripts/preinstall
+} > "$WORK/scripts/preinstall"
+chmod 755 "$WORK/scripts/"*
+cp "$BINARY" "$WORK/root/Library/eGuard NAC/eguard-nac-service"
 chmod 755 "$WORK/root/Library/eGuard NAC/eguard-nac-service"
 cp installer/macos/id.eguard.nac.plist "$WORK/root/Library/LaunchDaemons/"
 if [[ -n "${DEVELOPER_ID_APPLICATION:-}" ]]; then
  codesign --force --timestamp --options runtime --identifier id.eguard.nac --sign "$DEVELOPER_ID_APPLICATION" "$WORK/root/Library/eGuard NAC/eguard-nac-service"
  codesign --verify --strict "$WORK/root/Library/eGuard NAC/eguard-nac-service"
 fi
-pkgbuild --root "$WORK/root" --identifier id.eguard.nac --version "$VERSION" --scripts installer/macos/scripts --install-location / "$WORK/component.pkg"
+pkgbuild --root "$WORK/root" --identifier id.eguard.nac --version "$VERSION" --scripts "$WORK/scripts" --install-location / "$WORK/component.pkg"
 sed "s/@VERSION@/$VERSION/g" installer/macos/Distribution.xml > "$WORK/Distribution.xml"
 PKG="dist/unix/eGuard-NAC-$VERSION.pkg"
 productbuild --distribution "$WORK/Distribution.xml" --package-path "$WORK" "$PKG"

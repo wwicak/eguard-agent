@@ -38,6 +38,7 @@ Page instfiles
 LicenseText "eGuard NAC Agent collects device posture for network access policy only." "I Agree"
 LicenseData "${PAYLOAD}/NOTICE.txt"
 
+Var Upgrade
 Var Bootstrap
 Var Activation
 Var Code
@@ -143,6 +144,14 @@ Function .onInit
     MessageBox MB_ICONSTOP "eGuard NAC Agent requires 64-bit Windows." /SD IDOK
     Abort
   ${EndIf}
+  SetRegView 64
+  SetShellVarContext all
+  ReadRegStr $R1 HKLM "SYSTEM\CurrentControlSet\Services\eGuardNAC" "ImagePath"
+  ${If} $R1 != ""
+  ${AndIf} ${FileExists} "$APPDATA\eGuard NAC\state.json"
+    StrCpy $Upgrade 1
+    Return
+  ${EndIf}
   ${GetParameters} $R0
   ${GetOptions} $R0 "/BOOTSTRAP=" $Bootstrap
   ${GetOptions} $R0 "/ACTIVATION=" $Activation
@@ -179,6 +188,9 @@ Function .onInit
 FunctionEnd
 
 Function CodePage
+  ${If} $Upgrade == 1
+    Abort
+  ${EndIf}
   ${If} $Bootstrap != ""
     Abort
   ${EndIf}
@@ -212,7 +224,9 @@ Section "Install"
   File "${PAYLOAD}/eguard-nac-service.exe"
   File "${PAYLOAD}/nac-setup.exe"
   DetailPrint "Verifying enrollment, provisioning and starting the eGuard NAC service..."
-  ${If} $Code != ""
+  ${If} $Upgrade == 1
+    nsExec::ExecToLog '"$INSTDIR\nac-setup.exe" upgrade "$INSTDIR\eguard-nac-service.exe"'
+  ${ElseIf} $Code != ""
     nsExec::ExecToLog '"$INSTDIR\nac-setup.exe" install-code "$INSTDIR\eguard-nac-service.exe" "$Code"'
   ${Else}
     nsExec::ExecToLog '"$INSTDIR\nac-setup.exe" install "$INSTDIR\eguard-nac-service.exe" "$Bootstrap" "$Activation"'
@@ -222,8 +236,8 @@ Section "Install"
   SetOutPath "$TEMP"
   RMDir /r "$INSTDIR"
   ${If} $0 != 0
-    DetailPrint "Installation failed (code $0). All changes were rolled back."
-    MessageBox MB_ICONSTOP "eGuard NAC installation failed (code $0).$\r$\nNo changes were left on this device. See details for the reason." /SD IDOK
+    DetailPrint "Installation failed (code $0). See helper output for recovery status."
+    MessageBox MB_ICONSTOP "eGuard NAC installation failed (code $0).$\r$\nSee details for the reason and recovery status." /SD IDOK
     SetErrorLevel $0
     Abort
   ${EndIf}

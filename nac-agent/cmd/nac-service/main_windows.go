@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"eguard-nac-agent/boundary"
+	"eguard-nac-agent/buildinfo"
 	"eguard-nac-agent/cleanup"
 	"eguard-nac-agent/cngcred"
 	"eguard-nac-agent/collector"
@@ -122,6 +123,10 @@ func logOutcome(err error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "version" {
+		fmt.Println(buildinfo.Version)
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--nac-fixed-collect" {
 		if boundary.AwaitGate(os.Stdin, boundary.GateTimeout) != nil {
 			os.Exit(2)

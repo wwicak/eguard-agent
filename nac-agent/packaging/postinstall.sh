@@ -2,4 +2,7 @@
 set -eu
 systemctl daemon-reload
 systemctl enable eguard-nac.service
-# Enrollment alone starts the service. Never start on package installation.
+if [ -e "${EGUARD_NAC_TEST_STATE:-/var/lib/eguard-nac/state.json}" ]; then
+ systemctl start eguard-nac.service
+fi
+# A fresh installation remains stopped until enrollment.

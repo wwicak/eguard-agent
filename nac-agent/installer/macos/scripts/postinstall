@@ -1,7 +1,11 @@
 #!/bin/sh
 set -eu
-mkdir -p /usr/local/bin
-ln -sf '/Library/eGuard NAC/eguard-nac-service' /usr/local/bin/eguard-nac
-chown root:wheel /Library/LaunchDaemons/id.eguard.nac.plist
-chmod 644 /Library/LaunchDaemons/id.eguard.nac.plist
-# Enrollment alone bootstraps launchd. Never load an unenrolled daemon.
+# Root override is exclusively for sandbox tests; unset in package execution.
+root=${EGUARD_NAC_TEST_ROOT:-}
+mkdir -p "$root/usr/local/bin"
+ln -sf '/Library/eGuard NAC/eguard-nac-service' "$root/usr/local/bin/eguard-nac"
+chown root:wheel "$root/Library/LaunchDaemons/id.eguard.nac.plist"
+chmod 644 "$root/Library/LaunchDaemons/id.eguard.nac.plist"
+if [ -e "${EGUARD_NAC_TEST_STATE:-/Library/Application Support/eGuard NAC/state.json}" ]; then
+ launchctl bootstrap system /Library/LaunchDaemons/id.eguard.nac.plist
+fi

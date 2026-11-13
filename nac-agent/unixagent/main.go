@@ -4,6 +4,7 @@ package unixagent
 
 import (
 	"context"
+	"eguard-nac-agent/buildinfo"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,6 +24,10 @@ import (
 )
 
 func Main(args []string) error {
+	if len(args) == 1 && args[0] == "version" {
+		fmt.Println(buildinfo.Version)
+		return nil
+	}
 	if len(args) == 1 && args[0] == "--nac-fixed-collect" {
 		if e := boundary.AwaitGate(os.Stdin, boundary.GateTimeout); e != nil {
 			return e

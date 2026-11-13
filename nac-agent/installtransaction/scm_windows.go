@@ -19,6 +19,20 @@ type SCM struct{ owned bool }
 
 func NewSCM() *SCM { return &SCM{} }
 
+// ExistingForUpgrade grants only the checked fixed service's operational methods.
+// It does not create/adopt a service in the INSTALL transaction.
+func ExistingForUpgrade(ctx context.Context) (*SCM, error) {
+	a := &SCM{owned: true}
+	s, err := a.Lookup(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.State == Missing {
+		return nil, ErrExisting
+	}
+	return a, nil
+}
+
 func open() (*mgr.Mgr, *mgr.Service, error) {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -31,6 +45,10 @@ func open() (*mgr.Mgr, *mgr.Service, error) {
 	}
 	return m, s, nil
 }
+
+// CheckUpgradeService enforces exactly the same service configuration as INSTALL.
+func CheckUpgradeService(s *mgr.Service) error { return check(s) }
+
 func check(s *mgr.Service) error {
 	c, err := s.Config()
 	if err != nil {
