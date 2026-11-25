@@ -217,19 +217,14 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
     let now = 1_700_000_000;
     prepare_tick(&mut runtime, now);
     runtime.consecutive_send_failures = 1;
-    for i in 0..EVENT_BATCH_SIZE {
+    for i in 0..EVENT_BATCH_SIZE - 1 {
         runtime.buffer.enqueue(event(i as i64)).unwrap();
     }
     runtime.telemetry_send_success = true;
     queue_event(&mut runtime);
     runtime.tick(now + 1).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 0);
-    assert_eq!(runtime.buffer.pending_count(), 1);
-    let remaining = runtime.buffer.peek_batch(1).unwrap();
-    assert_eq!(
-        remaining[0].1.created_at_unix,
-        (EVENT_BATCH_SIZE - 1) as i64
-    );
+    assert_eq!(runtime.buffer.pending_count(), 0);
     assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE]);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now + 1));
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
@@ -239,6 +234,27 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
         .any(|task| { matches!(task.kind, ControlPlaneTaskKind::ThreatIntelRefresh) }));
     // MAINTENANCE_TRANSPORT_COOLDOWN_SECS: 127.0.0.1:1 refuses policy_sync.
     assert_eq!(runtime.maintenance_retry_after_unix, Some(now + 1 + 30));
+}
+
+#[tokio::test]
+async fn successful_first_send_defers_maintenance_when_the_cap_leaves_backlog() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    for i in 0..EVENT_BATCH_SIZE {
+        runtime.buffer.enqueue(event(i as i64)).unwrap();
+    }
+    runtime.telemetry_send_success = true;
+    queue_event(&mut runtime);
+    runtime.tick(now + 1).await.unwrap();
+    assert_eq!(runtime.telemetry_send_batches, [EVENT_BATCH_SIZE]);
+    assert_eq!(runtime.buffer.pending_count(), 1);
+    let remaining = runtime.buffer.peek_batch(1).unwrap();
+    assert_eq!(
+        remaining[0].1.created_at_unix,
+        (EVENT_BATCH_SIZE - 1) as i64
+    );
+    assert_eq!(runtime.last_policy_fetch_unix, None);
 }
 
 #[tokio::test]
