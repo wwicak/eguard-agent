@@ -951,3 +951,44 @@ async fn delivery_http_timeout_acks_old_rows_and_does_not_rebuffer_confirmed_fre
     drop(runtime);
     std::fs::remove_dir_all(fixture).unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn sigterm_stop_flag_does_not_block_final_tamper_alert() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut runtime = runtime();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.client = grpc_client::Client::new(listener.local_addr().unwrap().to_string());
+    let (_stop, receiver) = tokio::sync::watch::channel(true);
+    runtime.set_telemetry_shutdown(receiver);
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).await.unwrap();
+            assert!(n > 0);
+            request.extend_from_slice(&buf[..n]);
+            if let Some((_, body)) = std::str::from_utf8(&request)
+                .unwrap()
+                .split_once("\r\n\r\n")
+            {
+                if let Ok(body) = serde_json::from_str::<serde_json::Value>(body) {
+                    assert_eq!(body["rule_name"], "agent_stop_tamper");
+                    assert_eq!(body["event_data"]["signal"], "sigterm");
+                    break;
+                }
+            }
+        }
+        socket
+            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    runtime.report_shutdown_tamper(1, "sigterm").await.unwrap();
+    assert_eq!(runtime.buffer.pending_count(), 0, "not delivered directly");
+    tokio::time::timeout(std::time::Duration::from_secs(2), peer)
+        .await
+        .unwrap()
+        .unwrap();
+}

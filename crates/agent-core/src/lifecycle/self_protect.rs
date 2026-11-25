@@ -181,10 +181,7 @@ impl AgentRuntime {
         if self.client.is_online() {
             match timeout(
                 Duration::from_secs(2),
-                self.send_telemetry(
-                    std::slice::from_ref(&alert),
-                    &std::sync::atomic::AtomicUsize::new(0),
-                ),
+                self.client.send_events(std::slice::from_ref(&alert)),
             )
             .await
             {
