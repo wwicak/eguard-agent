@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -62,7 +63,11 @@ struct BaselineBatchRequest<'a> {
 }
 
 impl Client {
-    pub(super) async fn send_events_http(&self, batch: &[EventEnvelope]) -> Result<()> {
+    pub(super) async fn send_events_http(
+        &self,
+        batch: &[EventEnvelope],
+        accepted: &AtomicUsize,
+    ) -> Result<()> {
         let url = self.url_for(PATH_TELEMETRY);
         let payloads = batch
             .iter()
@@ -86,13 +91,18 @@ impl Client {
             let url = url.clone();
             let payloads = payloads.clone();
             async move {
-                for payload in &payloads {
+                for (index, payload) in payloads
+                    .iter()
+                    .enumerate()
+                    .skip(accepted.load(Ordering::Relaxed))
+                {
                     let response = self.post_json_request(&url, payload, "telemetry").await?;
                     anyhow::ensure!(
-                        response.status().is_success(),
+                        response.status() == reqwest::StatusCode::ACCEPTED,
                         "telemetry rejected with HTTP {}",
                         response.status()
                     );
+                    accepted.store(index + 1, Ordering::Relaxed);
                 }
                 Ok(())
             }

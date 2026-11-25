@@ -2913,7 +2913,8 @@ async fn delivery_stream_checks_ack_and_final_status() {
     });
     for (replies, success) in [
         (vec![full.clone()], true),
-        (vec![], true), // clean EOF: old non-ACKing server
+        (vec![partial.clone(), partial.clone()], true),
+        (vec![], false), // deployed streams ACK every successful batch
         (vec![partial], false),
         (
             vec![
@@ -2979,9 +2980,9 @@ async fn delivery_http_fixture(
 }
 
 #[tokio::test]
-async fn delivery_http_requires_a_2xx_response() {
+async fn delivery_http_requires_the_admission_status() {
     for (statuses, success) in [
-        (&["200 OK"][..], true),
+        (&["200 OK"][..], false),
         (&["202 Accepted"][..], true),
         (&["304 Not Modified"][..], false),
     ] {
@@ -2997,7 +2998,7 @@ async fn delivery_http_requires_a_2xx_response() {
 }
 
 #[tokio::test]
-async fn delivery_characterization_retries_grpc_and_http_prefixes_on_backpressure() {
+async fn delivery_fallback_preserves_grpc_replay_but_resumes_http_prefix() {
     let state = Arc::new(Mutex::new(TelemetryMockState {
         reject_prefixes: Some(Vec::new()),
         ..Default::default()
@@ -3006,7 +3007,6 @@ async fn delivery_characterization_retries_grpc_and_http_prefixes_on_backpressur
     let (address, posted) = delivery_http_fixture(&[
         "202 Accepted",
         "503 Service Unavailable",
-        "202 Accepted",
         "503 Service Unavailable",
     ])
     .await;
@@ -3021,22 +3021,21 @@ async fn delivery_characterization_retries_grpc_and_http_prefixes_on_backpressur
         spool.enqueue(event).unwrap();
     }
     let rows = spool.peek_batch(2).unwrap();
+    let accepted = AtomicUsize::new(0);
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        client.send_events(&batch),
+        client.send_events_with_progress(&batch, &accepted),
     )
     .await
     .unwrap();
-    if result.is_ok() {
-        spool
-            .ack(&rows.iter().map(|(id, _)| *id).collect::<Vec<_>>())
-            .unwrap();
-    }
+    let accepted = accepted.load(Ordering::Relaxed);
+    assert_eq!(accepted, 1);
+    spool.ack(&[rows[0].0]).unwrap();
     assert!(result.is_err());
     assert!(started.elapsed() >= std::time::Duration::from_millis(40));
     // The server accepted prefix event 1 before rejecting event 2. The whole
-    // gRPC batch retries, and both HTTP attempts post that prefix again.
+    // gRPC batch retries. HTTP skips its own confirmed prefix on retry.
     let mut state = state.lock().unwrap();
     assert_eq!(
         state.reject_prefixes.as_ref().unwrap(),
@@ -3046,7 +3045,27 @@ async fn delivery_characterization_retries_grpc_and_http_prefixes_on_backpressur
     drop(state);
     assert_eq!(batches.len(), 2);
     assert_eq!(batches[0], batches[1]);
-    assert_eq!(posted.await.unwrap(), [1, 2, 1, 2]);
-    assert_eq!(spool.pending_count(), 2);
+    assert_eq!(posted.await.unwrap(), [1, 2, 2]);
+    assert_eq!(spool.pending_count(), 1);
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn delivery_http_retry_resumes_after_accepted_prefix() {
+    let (address, posted) = delivery_http_fixture(&[
+        "202 Accepted",
+        "503 Service Unavailable",
+        "202 Accepted",
+        "202 Accepted",
+    ])
+    .await;
+    let mut client = Client::new(address.to_string());
+    client.retry.max_attempts = 2;
+    client.retry.min_backoff = std::time::Duration::from_millis(10);
+    client.retry.jitter_percent = 0;
+    client
+        .send_events(&[delivery_event(1), delivery_event(2), delivery_event(3)])
+        .await
+        .unwrap();
+    assert_eq!(posted.await.unwrap(), [1, 2, 2, 3]);
 }

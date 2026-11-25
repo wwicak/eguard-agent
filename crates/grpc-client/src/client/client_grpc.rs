@@ -39,20 +39,25 @@ impl Client {
                 .await
                 .context("stream_events RPC failed")?
                 .into_inner();
-            // Clean EOF without an ACK is supported for legacy peers. Otherwise
-            // require full admission and still read the terminal stream status.
+            let expected = batch.len() as i64;
+            let mut accepted = 0;
             while let Some(ack) = replies
                 .message()
                 .await
                 .context("telemetry ACK stream failed")?
             {
                 anyhow::ensure!(
-                    ack.events_accepted == batch.len() as i64,
-                    "telemetry ACK accepted {} of {} events",
+                    (0..=expected - accepted).contains(&ack.events_accepted),
+                    "invalid telemetry ACK count {} with {} remaining",
                     ack.events_accepted,
-                    batch.len()
+                    expected - accepted
                 );
+                accepted += ack.events_accepted;
             }
+            anyhow::ensure!(
+                accepted == expected,
+                "telemetry ACK accepted {accepted} of {expected} events"
+            );
             Ok(())
         })
         .await
