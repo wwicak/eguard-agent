@@ -77,10 +77,12 @@ impl ProbeFailure {
     }
 
     fn attach(name: String, diagnostic: String, kind: ErrorKind) -> Self {
-        if kind == ErrorKind::Unsupported {
-            Self::new(name, diagnostic, "unsupported", "hook_unsupported")
-        } else {
-            Self::new(name, diagnostic, "failed", "attach_failed")
+        match kind {
+            ErrorKind::NotFound => Self::new(name, diagnostic, "unsupported", "hook_missing"),
+            ErrorKind::Unsupported => {
+                Self::new(name, diagnostic, "unsupported", "hook_unsupported")
+            }
+            _ => Self::new(name, diagnostic, "failed", "attach_failed"),
         }
     }
 }
@@ -231,7 +233,8 @@ fn load_objects_with_degradation(
     let mut loaded = Vec::with_capacity(elf_paths.len());
     for path in elf_paths {
         match load_object_with_degradation(path, event_map_name, &mut failed_probes) {
-            Ok(object) => loaded.push(object),
+            Ok(Some(object)) => loaded.push(object),
+            Ok(None) => {} // Individual optional attach outcomes are already recorded.
             Err(err) if is_optional_ebpf_object_path(path) => {
                 let optional = path
                     .file_name()
@@ -306,7 +309,7 @@ fn load_object_with_degradation(
     path: &Path,
     event_map_name: &str,
     failed_probes: &mut Vec<ProbeFailure>,
-) -> Result<LoadedObject> {
+) -> Result<Option<LoadedObject>> {
     let open_obj = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
         .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?;
@@ -373,6 +376,11 @@ fn load_object_with_degradation(
     }
 
     if attached_programs.is_empty() && total_programs > 0 {
+        // A wholly optional object with no hooks attached is still skipped.
+        // Don't turn an unsupported hook into an object-level load failure.
+        if is_optional_ebpf_object_path(path) {
+            return Ok(None);
+        }
         return Err(EbpfError::Backend(format!(
             "no programs attached from '{}' ({} total, all failed)",
             path.display(),
@@ -380,12 +388,12 @@ fn load_object_with_degradation(
         )));
     }
 
-    Ok(LoadedObject {
+    Ok(Some(LoadedObject {
         path: path.to_path_buf(),
         object,
         _links: links,
         attached_programs,
-    })
+    }))
 }
 
 impl RingBufferBackend for LibbpfRingBufferBackend {
@@ -979,6 +987,11 @@ mod tests {
     fn optional_attach_health_distinguishes_unsupported_and_failed() {
         for (kind, status, reason) in [
             (ErrorKind::Unsupported, "unsupported", "hook_unsupported"),
+            (
+                libbpf_rs::Error::from_raw_os_error(libc::ENOENT).kind(),
+                "unsupported",
+                "hook_missing",
+            ),
             (ErrorKind::PermissionDenied, "failed", "attach_failed"),
         ] {
             let result =

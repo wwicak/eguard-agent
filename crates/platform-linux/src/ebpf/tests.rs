@@ -3,6 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::replay::ReplayBackend;
+use super::types::ProbeHealth;
 use super::*;
 use crate::EventType;
 
@@ -10,6 +11,7 @@ use crate::EventType;
 struct InMemoryRingBufferBackend {
     queue: VecDeque<Vec<u8>>,
     dropped: u64,
+    unattached: Vec<ProbeHealth>,
 }
 
 impl InMemoryRingBufferBackend {
@@ -19,6 +21,10 @@ impl InMemoryRingBufferBackend {
 }
 
 impl RingBufferBackend for InMemoryRingBufferBackend {
+    fn unattached_probes(&self) -> Vec<ProbeHealth> {
+        self.unattached.clone()
+    }
+
     fn poll_raw_events(&mut self, _timeout: Duration) -> Result<PollBatch> {
         let records: Vec<Vec<u8>> = self.queue.drain(..).collect();
         Ok(PollBatch {
@@ -664,4 +670,41 @@ fn replay_backend_reads_ndjson_file() {
     assert_eq!(b3.records.len(), 0);
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn engine_sensor_health_merges_attached_and_unavailable_probes() {
+    let missing = ProbeHealth {
+        name: "eguard_sys_enter_openat2".into(),
+        status: "unsupported",
+        reason: "hook_missing",
+    };
+    let mut engine = EbpfEngine {
+        backend: Box::new(InMemoryRingBufferBackend {
+            unattached: vec![missing.clone()],
+            ..Default::default()
+        }),
+        stats: EbpfStats {
+            attached_program_names: vec!["eguard_sys_enter_openat".into()],
+            ..Default::default()
+        },
+    };
+    engine.record_skipped_lsm(false);
+    let (_, probes, _) = engine.sensor_health();
+    assert_eq!(
+        probes,
+        vec![
+            missing,
+            ProbeHealth {
+                name: "eguard_bprm_check".into(),
+                status: "failed",
+                reason: "lsm_list_unreadable",
+            },
+            ProbeHealth {
+                name: "eguard_sys_enter_openat".into(),
+                status: "attached",
+                reason: "",
+            }
+        ]
+    );
 }

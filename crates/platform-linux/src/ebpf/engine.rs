@@ -176,7 +176,7 @@ impl EbpfEngine {
         let (status, reason) = if lsm_list_known {
             ("unsupported", "bpf_lsm_disabled")
         } else {
-            ("failed", "lsm_capability_unavailable")
+            ("failed", "lsm_list_unreadable")
         };
         self.stats.skipped_lsm = Some(ProbeHealth {
             name: "eguard_bprm_check".to_string(),

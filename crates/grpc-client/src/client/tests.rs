@@ -737,11 +737,18 @@ fn test_sensor_health_report() -> pb::SensorHealthReport {
         sequence: 42,
         observed_at_unix: 1_700_000_000,
         transport: "perf_buffer".to_string(),
-        probes: vec![pb::SensorProbe {
-            name: "fixture_probe".to_string(),
-            status: "unsupported".to_string(),
-            reason: "hook_unsupported".to_string(),
-        }],
+        probes: vec![
+            pb::SensorProbe {
+                name: "eguard_sys_enter_openat".to_string(),
+                status: "attached".to_string(),
+                reason: String::new(),
+            },
+            pb::SensorProbe {
+                name: "eguard_sys_enter_openat2".to_string(),
+                status: "unsupported".to_string(),
+                reason: "hook_missing".to_string(),
+            },
+        ],
         kernel_drops: 1,
         perf_lost_samples: 2,
         pending_queue_evictions: 3,
@@ -783,8 +790,10 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
         );
         assert_eq!(payload["resource_usage"]["memory_rss_bytes"], 456789);
         assert_eq!(payload["resource_usage"]["disk_usage_bytes"], 123456);
-        let health: pb::SensorHealthReport = serde_json::from_value(payload["sensor_health"].clone()).unwrap();
-        assert_eq!(health, test_sensor_health_report());
+        // Mirrored by the Go decoder/validator test in PLAT-SERVER.
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/sensor-health.json")).unwrap();
+        assert_eq!(payload["sensor_health"], golden);
 
         let response =
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
