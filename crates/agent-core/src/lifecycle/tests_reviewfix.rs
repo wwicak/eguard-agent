@@ -584,10 +584,7 @@ async fn fresh_compliance_alert_drains_remaining_old_rows_before_scheduling() {
     }
     queue_event(&mut runtime);
     runtime.tick(now).await.unwrap();
-    assert_eq!(
-        runtime.telemetry_send_batches,
-        vec![EVENT_BATCH_SIZE + 1, 2]
-    );
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE, 3]);
     assert_eq!(runtime.buffer.pending_count(), 0);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now));
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
@@ -991,4 +988,51 @@ async fn sigterm_stop_flag_does_not_block_final_tamper_alert() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn grpc_spool_send_cap_respects_default_server_burst() {
+    let mut runtime = runtime();
+    runtime.client =
+        grpc_client::Client::with_mode("127.0.0.1:1".into(), grpc_client::TransportMode::Grpc);
+    runtime.telemetry_send_success = true;
+    for i in 0..256 {
+        runtime.buffer.enqueue(event(i)).unwrap();
+    }
+    runtime.flush_event_batch(Vec::new()).await.unwrap();
+    assert_eq!(runtime.telemetry_send_batches, [128]);
+    assert_eq!(runtime.buffer.pending_count(), 128);
+}
+
+#[tokio::test]
+#[ignore = "run with the Go delivery-default-burst loopback fixture"]
+async fn delivery_default_burst_grpc_spool_fixture() {
+    let address = std::env::var("EGUARD_TEST_DELIVERY_GRPC_ADDR").unwrap();
+    let first_only = std::env::var_os("EGUARD_TEST_DELIVERY_BASE_SERVER").is_some();
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
+    runtime.buffer = grpc_client::EventBuffer::sqlite(path.to_str().unwrap(), 64 * 1024).unwrap();
+    runtime.client = grpc_client::Client::with_mode(address, grpc_client::TransportMode::Grpc);
+    for i in 1..=256 {
+        let mut envelope = event(i);
+        envelope.payload_json = format!(r#"{{"sequence":{i}}}"#);
+        runtime.buffer.enqueue(envelope).unwrap();
+    }
+    runtime.flush_event_batch(Vec::new()).await.unwrap();
+    assert_eq!(
+        runtime.buffer.pending_count(),
+        128,
+        "first 128 must be admitted"
+    );
+    if !first_only {
+        runtime.flush_event_batch(Vec::new()).await.unwrap();
+        assert_eq!(
+            runtime.buffer.pending_count(),
+            0,
+            "remaining 128 must drain"
+        );
+    }
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
 }

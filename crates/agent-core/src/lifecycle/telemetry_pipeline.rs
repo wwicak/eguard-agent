@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
+use grpc_client::TransportMode;
 use serde_json::json;
 use tokio::time::timeout;
 use tracing::{info, warn};
@@ -16,6 +17,8 @@ use super::{
 const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
 const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
+// Leave refill headroom below the default server burst of 200.
+const GRPC_TELEMETRY_BATCH_SIZE: usize = 128;
 
 #[derive(Clone, Copy)]
 pub(super) enum ProcessGeneration {
@@ -277,14 +280,18 @@ impl AgentRuntime {
     ) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
+        let batch_limit = match self.client.transport_mode() {
+            TransportMode::Grpc => GRPC_TELEMETRY_BATCH_SIZE,
+            TransportMode::Http => EVENT_BATCH_SIZE,
+        };
         // The first evaluation still travels before control-plane work,
         // without inserting it into a full spool or sending more than the cap.
         let reserved = if reserve_for_current {
-            events.len().min(EVENT_BATCH_SIZE)
+            events.len().min(batch_limit)
         } else {
             0
         };
-        let rows = match self.buffer.peek_batch(EVENT_BATCH_SIZE - reserved) {
+        let rows = match self.buffer.peek_batch(batch_limit - reserved) {
             Ok(batch) => batch,
             Err(err) => {
                 // Preserve current events without hiding the peek error.
@@ -297,7 +304,7 @@ impl AgentRuntime {
         let mut batch: Vec<_> = rows.into_iter().map(|(_, event)| event).collect();
         let mut overflow = Vec::new();
         for event in events {
-            if batch.len() < EVENT_BATCH_SIZE {
+            if batch.len() < batch_limit {
                 batch.push(event);
             } else {
                 overflow.push(event);

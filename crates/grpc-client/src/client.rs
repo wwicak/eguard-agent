@@ -130,6 +130,10 @@ impl Client {
         self.pending_commands.push_back(command);
     }
 
+    pub fn transport_mode(&self) -> TransportMode {
+        self.mode
+    }
+
     pub fn retry_policy(&self) -> &RetryPolicy {
         &self.retry
     }
