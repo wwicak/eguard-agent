@@ -1,5 +1,6 @@
 // Module-level cfg is already applied in ebpf.rs; no need to duplicate here.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -43,7 +44,7 @@ pub(super) struct LibbpfPerfBufferBackend {
     _loaded: Vec<LoadedObject>,
 }
 
-type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
+type RecordSink = Arc<Mutex<VecDeque<Vec<u8>>>>;
 type RecordPool = Arc<Mutex<Vec<Vec<u8>>>>;
 
 const LOW_MEMORY_HOST_THRESHOLD_BYTES: u64 = 3 * 1024 * 1024 * 1024;
@@ -504,7 +505,7 @@ fn build_ring_buffer(
     event_map_name: &str,
     record_budget: RecordBudget,
 ) -> Result<(libbpf_rs::RingBuffer<'static>, RecordSink, RecordPool)> {
-    let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let records = RecordSink::default();
     let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let map_sources = collect_event_map_sources(loaded, event_map_name)?;
 
@@ -554,7 +555,7 @@ fn build_perf_buffers(
     event_map_name: &str,
     record_budget: RecordBudget,
 ) -> Result<(Vec<PerfBufferSlot>, RecordSink, RecordPool, Arc<AtomicU64>)> {
-    let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let records = RecordSink::default();
     let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let perf_lost_records = Arc::new(AtomicU64::new(0));
     let map_sources = collect_event_map_sources(loaded, event_map_name)?;
@@ -622,9 +623,9 @@ fn push_raw_record(
     let mut dropped_record = None;
     if let Ok(mut guard) = records_sink.lock() {
         if guard.len() >= max_pending_raw_records {
-            dropped_record = Some(guard.swap_remove(0));
+            dropped_record = guard.pop_front();
         }
-        guard.push(record);
+        guard.push_back(record);
     }
 
     if let Some(mut dropped) = dropped_record {
@@ -721,7 +722,9 @@ fn drain_record_sink(records: &RecordSink) -> Result<Vec<Vec<u8>>> {
     let mut guard = records
         .lock()
         .map_err(|_| EbpfError::Backend("failed to collect eBPF event records".to_string()))?;
-    Ok(std::mem::take(&mut *guard))
+    let drained = std::mem::take(&mut *guard);
+    drop(guard);
+    Ok(drained.into())
 }
 
 fn sample_drop_counters(sources: &mut [DropCounterSource]) -> Result<u64> {
@@ -809,6 +812,26 @@ fn sample_perf_lost_records(counter: &Arc<AtomicU64>, last_seen: &mut u64) -> u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_records_evict_oldest_and_preserve_arrival_order() {
+        let records = RecordSink::default();
+        let pool = RecordPool::default();
+
+        for sample in 1..=5 {
+            push_raw_record(&[sample], &records, &pool, 3);
+        }
+        assert_eq!(
+            drain_record_sink(&records).unwrap(),
+            vec![vec![3], vec![4], vec![5]],
+            "overflow must retain the newest records in callback order"
+        );
+
+        for sample in 6..=7 {
+            push_raw_record(&[sample], &records, &pool, 3);
+        }
+        assert_eq!(drain_record_sink(&records).unwrap(), vec![vec![6], vec![7]]);
+    }
 
     #[test]
     fn parse_memtotal_line_reads_kib_value() {
