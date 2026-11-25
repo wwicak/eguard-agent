@@ -731,6 +731,23 @@ async fn send_heartbeat_offline_returns_error() {
     assert!(err.to_string().contains("server unreachable"));
 }
 
+fn test_sensor_health_report() -> pb::SensorHealthReport {
+    pb::SensorHealthReport {
+        epoch: "0123456789abcdef0123456789abcdef".to_string(),
+        sequence: 42,
+        observed_at_unix: 1_700_000_000,
+        transport: "perf_buffer".to_string(),
+        probes: vec![pb::SensorProbe {
+            name: "fixture_probe".to_string(),
+            status: "unsupported".to_string(),
+            reason: "hook_unsupported".to_string(),
+        }],
+        kernel_drops: 1,
+        perf_lost_samples: 2,
+        pending_queue_evictions: 3,
+    }
+}
+
 #[tokio::test]
 // AC-GRP-010 AC-GRP-019 AC-GRP-081
 async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
@@ -766,6 +783,8 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
         );
         assert_eq!(payload["resource_usage"]["memory_rss_bytes"], 456789);
         assert_eq!(payload["resource_usage"]["disk_usage_bytes"], 123456);
+        let health: pb::SensorHealthReport = serde_json::from_value(payload["sensor_health"].clone()).unwrap();
+        assert_eq!(health, test_sensor_health_report());
 
         let response =
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
@@ -799,6 +818,7 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
                     events_per_second: 14.5,
                 },
                 buffered_events: 9,
+                sensor_health: Some(test_sensor_health_report()),
             }),
         )
         .await
@@ -2277,6 +2297,7 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
                     events_per_second: 42.0,
                 },
                 buffered_events: 7,
+                sensor_health: Some(test_sensor_health_report()),
             }),
         )
         .await
@@ -2290,6 +2311,7 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
         assert_eq!(heartbeat.compliance_status, "compliant");
         assert_eq!(heartbeat.config_version, "cfg-v7");
         assert_eq!(heartbeat.buffered_events, 7);
+        assert_eq!(heartbeat.sensor_health.as_ref(), Some(&test_sensor_health_report()));
         assert_eq!(heartbeat.status.as_ref().map(|s| s.mode), Some(1));
         assert_eq!(
             heartbeat

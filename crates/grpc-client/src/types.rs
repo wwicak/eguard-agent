@@ -238,6 +238,8 @@ pub struct HeartbeatRuntimeEnvelope {
     pub resource_usage: HeartbeatResourceUsageEnvelope,
     #[serde(default)]
     pub buffered_events: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensor_health: Option<crate::pb::SensorHealthReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

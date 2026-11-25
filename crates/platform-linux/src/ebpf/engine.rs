@@ -7,7 +7,7 @@ use super::backend::{NoopRingBufferBackend, RingBufferBackend};
 use super::capabilities::{build_capability_report, detect_kernel_capabilities};
 use super::codec::parse_raw_event;
 use super::replay::ReplayBackend;
-use super::types::{EbpfError, EbpfStats, Result, EVENT_HEADER_SIZE};
+use super::types::{EbpfError, EbpfStats, ProbeHealth, Result, SensorLoss, EVENT_HEADER_SIZE};
 
 #[cfg(feature = "ebpf-libbpf")]
 use super::libbpf_backend::{LibbpfPerfBufferBackend, LibbpfRingBufferBackend};
@@ -169,6 +169,44 @@ impl EbpfEngine {
 
     pub fn stats(&self) -> EbpfStats {
         self.stats.clone()
+    }
+
+    /// Record an existing bootstrap decision; this does not try to attach a probe.
+    pub fn record_skipped_lsm(&mut self, lsm_list_known: bool) {
+        let (status, reason) = if lsm_list_known {
+            ("unsupported", "bpf_lsm_disabled")
+        } else {
+            ("failed", "lsm_capability_unavailable")
+        };
+        self.stats.skipped_lsm = Some(ProbeHealth {
+            name: "eguard_bprm_check".to_string(),
+            status,
+            reason,
+        });
+    }
+
+    pub fn sensor_health(&self) -> (&'static str, Vec<ProbeHealth>, SensorLoss) {
+        let transport = self.backend.sensor_transport();
+        let mut probes = self.backend.unattached_probes();
+        probes.extend(self.stats.skipped_lsm.iter().cloned());
+        probes.extend(
+            self.stats
+                .attached_program_names
+                .iter()
+                .map(|name| ProbeHealth {
+                    name: name.clone(),
+                    status: "attached",
+                    reason: "",
+                }),
+        );
+        if self.stats.attached_program_names.is_empty() {
+            probes.push(ProbeHealth {
+                name: "ebpf_backend".to_string(),
+                status: "failed",
+                reason: "no_probes_attached",
+            });
+        }
+        (transport, probes, self.backend.sensor_loss())
     }
 
     pub fn backend_label(&self) -> &'static str {

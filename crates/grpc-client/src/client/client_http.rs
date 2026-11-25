@@ -133,6 +133,9 @@ impl Client {
                 "events_per_second": runtime.resource_usage.events_per_second,
             });
             body["buffered_events"] = runtime.buffered_events.into();
+            if let Some(health) = &runtime.sensor_health {
+                body["sensor_health"] = serde_json::to_value(health)?;
+            }
         }
 
         self.post_json_with_retry("heartbeat_http", PATH_HEARTBEAT, &body, "heartbeat")

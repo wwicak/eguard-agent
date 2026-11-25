@@ -24,6 +24,8 @@ mod response_actions;
 mod response_playbook;
 mod runtime;
 mod runtime_mode;
+#[cfg(target_os = "linux")]
+mod sensor_health;
 mod self_protect;
 mod storage_hygiene;
 mod telemetry;

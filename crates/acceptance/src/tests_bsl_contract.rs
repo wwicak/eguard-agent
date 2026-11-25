@@ -178,6 +178,7 @@ fn baseline_proto_and_config_contracts_include_learning_fleet_and_heartbeat_fiel
         baseline_report: Some(report.clone()),
         config_version: "v1".to_string(),
         buffered_events: 0,
+        sensor_health: None,
         compliance_status: "compliant".to_string(),
         sent_at_unix: 1_700_000_000,
     };

@@ -147,6 +147,7 @@ impl Client {
                     }),
                     config_version: config_version.to_string(),
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
+                    sensor_health: runtime.and_then(|r| r.sensor_health.clone()),
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })
