@@ -123,7 +123,13 @@ impl AgentRuntime {
         };
 
         if self.client.is_online() {
-            if let Err(err) = self.client.send_events(std::slice::from_ref(&alert)).await {
+            if let Err(err) = self
+                .send_telemetry(
+                    std::slice::from_ref(&alert),
+                    &std::sync::atomic::AtomicUsize::new(0),
+                )
+                .await
+            {
                 warn!(
                     error = %err,
                     pending = self.buffer.pending_count(),
@@ -175,7 +181,10 @@ impl AgentRuntime {
         if self.client.is_online() {
             match timeout(
                 Duration::from_secs(2),
-                self.client.send_events(std::slice::from_ref(&alert)),
+                self.send_telemetry(
+                    std::slice::from_ref(&alert),
+                    &std::sync::atomic::AtomicUsize::new(0),
+                ),
             )
             .await
             {

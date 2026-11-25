@@ -839,41 +839,99 @@ fn compliance_policy_transition_prunes_full_old_context() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn delivery_shutdown_persists_staged_and_unacked_fresh_without_reenqueuing_sent_prefix() {
+async fn delivery_signal_finishes_hung_tick_under_stop_deadline_and_spools() {
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
+    let path = path.to_str().unwrap();
+    runtime.buffer = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.client = grpc_client::Client::new(listener.local_addr().unwrap().to_string());
+    let (started, in_flight) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (first, _) = listener.accept().await.unwrap();
+        let _ = started.send(());
+        let mut held = vec![first];
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    runtime.tick_telemetry = Some((1..=4).map(event).collect());
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    runtime.set_telemetry_shutdown(receiver);
+    let mut signal: crate::ShutdownFuture = Box::pin(async move {
+        in_flight.await.unwrap();
+        crate::ShutdownReason::SigTerm
+    });
+    let completion = tokio::time::timeout(
+        std::time::Duration::from_secs(14),
+        crate::finish_tick_on_telemetry_shutdown(
+            runtime.run_connected_telemetry_stage(None),
+            &mut signal,
+            &stop,
+        ),
+    )
+    .await;
+    peer.abort();
+    completion
+        .expect("SIGTERM exceeded its 15s stop limit")
+        .0
+        .unwrap();
+    let reopened = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    let timestamps: Vec<_> = reopened
+        .peek_batch(4)
+        .unwrap()
+        .into_iter()
+        .map(|(_, e)| e.created_at_unix)
+        .collect();
+    assert_eq!(timestamps, [1, 2, 3, 4]);
+    drop(reopened);
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[tokio::test]
+async fn delivery_http_timeout_acks_old_rows_and_does_not_rebuffer_confirmed_fresh_prefix() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut runtime = runtime();
     let fixture = reviewfix_sqlite_dir();
     let path = fixture.join("offline.db");
     let path = path.to_str().unwrap();
     runtime.buffer = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
     runtime.buffer.enqueue(event(1)).unwrap();
-    runtime.telemetry_in_flight = Some((1, vec![event(1), event(2)]));
-    runtime.tick_telemetry = Some(vec![event(3)]);
-    runtime.persist_shutdown_telemetry().await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.client = grpc_client::Client::new(listener.local_addr().unwrap().to_string());
+    let peer = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+        let (_hung, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    runtime
+        .flush_event_batch(vec![event(2), event(3)])
+        .await
+        .unwrap();
+    peer.abort();
+    assert_eq!(runtime.consecutive_send_failures, 1);
+    assert_eq!(runtime.pipeline_events_sent, 2);
     let reopened = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
     let timestamps: Vec<_> = reopened
         .peek_batch(4)
         .unwrap()
         .into_iter()
-        .map(|(_, event)| event.created_at_unix)
+        .map(|(_, e)| e.created_at_unix)
         .collect();
-    assert_eq!(timestamps, [1, 2, 3]);
+    assert_eq!(timestamps, [3]);
     drop(reopened);
     drop(runtime);
     std::fs::remove_dir_all(fixture).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn delivery_shutdown_spool_wait_is_bounded() {
-    let (release, blocked) = std::sync::mpsc::channel();
-    let start = std::time::Instant::now();
-    let error = super::telemetry_pipeline::run_shutdown_spool_write(move || {
-        blocked.recv().unwrap();
-        Ok(())
-    })
-    .await
-    .unwrap_err();
-    release.send(()).unwrap();
-    assert!(error.to_string().contains("exceeded 1s budget"));
-    assert!(start.elapsed() < std::time::Duration::from_millis(1500));
 }

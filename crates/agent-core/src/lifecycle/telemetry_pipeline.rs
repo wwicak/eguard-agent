@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -15,23 +16,6 @@ use super::{
 const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
 const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
-
-#[cfg(target_os = "linux")]
-pub(super) async fn run_shutdown_spool_write(
-    write: impl FnOnce() -> Result<()> + Send + 'static,
-) -> Result<()> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    // Tokio joins spawn_blocking() threads when its runtime drops; a dedicated
-    // shutdown worker lets a stuck filesystem exceed neither our wait nor exit.
-    std::thread::Builder::new()
-        .name("shutdown-spool".into())
-        .spawn(move || {
-            let _ = send.send(write());
-        })?;
-    timeout(std::time::Duration::from_secs(1), receive)
-        .await
-        .map_err(|_| anyhow::anyhow!("shutdown telemetry spool exceeded 1s budget"))??
-}
 
 #[derive(Clone, Copy)]
 pub(super) enum ProcessGeneration {
@@ -159,45 +143,24 @@ impl ProcessGeneration {
 
 impl AgentRuntime {
     #[cfg(target_os = "linux")]
-    pub(crate) async fn persist_shutdown_telemetry(&mut self) -> Result<()> {
-        let mut events = self.tick_telemetry.take().unwrap_or_default();
-        if let Some((buffered_count, mut in_flight)) = self.telemetry_in_flight.take() {
-            // The prefix came from a peek, so it is already in the spool.
-            in_flight.drain(..buffered_count);
-            in_flight.append(&mut events);
-            events = in_flight;
-        }
-        if events.is_empty() {
-            return Ok(());
-        }
-        if !matches!(self.buffer, grpc_client::EventBuffer::Sqlite(_)) {
-            anyhow::bail!(
-                "cannot persist {} shutdown telemetry events: spool is volatile",
-                events.len()
-            );
-        }
-        let buffer = std::mem::replace(&mut self.buffer, grpc_client::EventBuffer::memory(0));
-        let grpc_client::EventBuffer::Sqlite(mut spool) = buffer else {
-            unreachable!()
-        };
-        run_shutdown_spool_write(move || {
-            let before = spool.spool_losses();
-            spool.enqueue_batch(&events).map_err(|err| {
-                err.context(format!(
-                    "{} shutdown telemetry enqueues failed",
-                    events.len()
-                ))
-            })?;
-            let losses = spool.spool_losses() - before;
-            if losses > 0 {
-                warn!(
-                    losses,
-                    "offline buffer overflowed while spooling shutdown telemetry"
-                );
+    pub(crate) fn set_telemetry_shutdown(&mut self, shutdown: tokio::sync::watch::Receiver<bool>) {
+        self.telemetry_shutdown = Some(shutdown);
+    }
+
+    pub(super) async fn send_telemetry(
+        &self,
+        batch: &[EventEnvelope],
+        accepted: &AtomicUsize,
+    ) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(mut shutdown) = self.telemetry_shutdown.clone() {
+            tokio::select! {
+                biased;
+                Ok(_) = shutdown.wait_for(|stopping| *stopping) => anyhow::bail!("telemetry send cancelled for shutdown"),
+                result = self.client.send_events_with_progress(batch, accepted) => return result,
             }
-            Ok(())
-        })
-        .await
+        }
+        self.client.send_events_with_progress(batch, accepted).await
     }
 
     pub(super) async fn run_connected_telemetry_stage(
@@ -344,11 +307,7 @@ impl AgentRuntime {
             return self.buffer_events(overflow);
         }
 
-        self.telemetry_in_flight = Some((buffered_count, batch));
-        let (_, batch) = self
-            .telemetry_in_flight
-            .as_ref()
-            .expect("send batch staged");
+        let accepted = AtomicUsize::new(0);
         #[cfg(test)]
         self.telemetry_send_batches.push(batch.len());
         #[cfg(test)]
@@ -356,17 +315,21 @@ impl AgentRuntime {
         #[cfg(not(test))]
         let mock_success = false;
         let send_result = if mock_success {
+            accepted.store(batch.len(), Ordering::Relaxed);
             Ok(Ok(()))
         } else {
             timeout(
                 std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
-                self.client.send_events(batch),
+                self.send_telemetry(&batch, &accepted),
             )
             .await
         };
-        let (_, batch) = self.telemetry_in_flight.take().expect("send batch staged");
+        let accepted = accepted.load(Ordering::Relaxed);
+        // HTTP can accept a prefix before a later attempt fails or times out.
+        // The cursor is owned by this caller, not the cancelled send future.
+        let ack_result = self.buffer.ack(&ids[..accepted.min(buffered_count)]);
+        self.pipeline_events_sent = self.pipeline_events_sent.saturating_add(accepted as u64);
 
-        let ack_result;
         if let Err(err) = match send_result {
             Ok(result) => result,
             Err(_) => Err(anyhow::anyhow!(
@@ -379,9 +342,13 @@ impl AgentRuntime {
                 self.transition_to_degraded(DegradedCause::SendFailures);
             }
 
-            // Old rows never left the buffer; append only unsent current events.
-            let current_result =
-                self.buffer_events(batch.into_iter().skip(buffered_count).collect());
+            // Unacknowledged old rows are still buffered; append only unsent fresh events.
+            let current_result = self.buffer_events(
+                batch
+                    .into_iter()
+                    .skip(buffered_count.max(accepted))
+                    .collect(),
+            );
             let overflow_result = self.buffer_events(overflow);
             warn!(
                 error = %err,
@@ -390,14 +357,10 @@ impl AgentRuntime {
                 "send failed, event re-buffering attempted"
             );
             self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
-            return current_result.and(overflow_result);
+            return current_result.and(overflow_result).and(ack_result);
         } else {
             self.consecutive_send_failures = 0;
-            self.pipeline_events_sent =
-                self.pipeline_events_sent.saturating_add(batch.len() as u64);
-            // An ack failure retains rows for at-least-once delivery; still append
-            // current overflow below rather than discarding it on this error.
-            ack_result = self.buffer.ack(&ids);
+
             if std::env::var("EGUARD_DEBUG_OFFLINE_LOG")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
