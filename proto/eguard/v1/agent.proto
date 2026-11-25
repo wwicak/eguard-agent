@@ -142,6 +142,7 @@ message SensorHealthReport {
   uint64 kernel_drops = 6;
   uint64 perf_lost_samples = 7;
   uint64 pending_queue_evictions = 8;
+  uint64 telemetry_spool_losses = 9;
 }
 
 message HeartbeatRequest {

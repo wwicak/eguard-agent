@@ -16,6 +16,23 @@ const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
 const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
 
+#[cfg(target_os = "linux")]
+pub(super) async fn run_shutdown_spool_write(
+    write: impl FnOnce() -> Result<()> + Send + 'static,
+) -> Result<()> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    // Tokio joins spawn_blocking() threads when its runtime drops; a dedicated
+    // shutdown worker lets a stuck filesystem exceed neither our wait nor exit.
+    std::thread::Builder::new()
+        .name("shutdown-spool".into())
+        .spawn(move || {
+            let _ = send.send(write());
+        })?;
+    timeout(std::time::Duration::from_secs(1), receive)
+        .await
+        .map_err(|_| anyhow::anyhow!("shutdown telemetry spool exceeded 1s budget"))??
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum ProcessGeneration {
     BootNs(u64),
@@ -141,6 +158,48 @@ impl ProcessGeneration {
 }
 
 impl AgentRuntime {
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn persist_shutdown_telemetry(&mut self) -> Result<()> {
+        let mut events = self.tick_telemetry.take().unwrap_or_default();
+        if let Some((buffered_count, mut in_flight)) = self.telemetry_in_flight.take() {
+            // The prefix came from a peek, so it is already in the spool.
+            in_flight.drain(..buffered_count);
+            in_flight.append(&mut events);
+            events = in_flight;
+        }
+        if events.is_empty() {
+            return Ok(());
+        }
+        if !matches!(self.buffer, grpc_client::EventBuffer::Sqlite(_)) {
+            anyhow::bail!(
+                "cannot persist {} shutdown telemetry events: spool is volatile",
+                events.len()
+            );
+        }
+        let buffer = std::mem::replace(&mut self.buffer, grpc_client::EventBuffer::memory(0));
+        let grpc_client::EventBuffer::Sqlite(mut spool) = buffer else {
+            unreachable!()
+        };
+        run_shutdown_spool_write(move || {
+            let before = spool.spool_losses();
+            spool.enqueue_batch(&events).map_err(|err| {
+                err.context(format!(
+                    "{} shutdown telemetry enqueues failed",
+                    events.len()
+                ))
+            })?;
+            let losses = spool.spool_losses() - before;
+            if losses > 0 {
+                warn!(
+                    losses,
+                    "offline buffer overflowed while spooling shutdown telemetry"
+                );
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub(super) async fn run_connected_telemetry_stage(
         &mut self,
         evaluation: Option<&TickEvaluation>,
@@ -236,6 +295,7 @@ impl AgentRuntime {
         if let Some(remaining) = self.buffer_enqueue_failure_at.as_mut() {
             if *remaining == 0 {
                 self.buffer_enqueue_failure_at = None;
+                self.buffer.note_spool_losses(1);
                 anyhow::bail!("injected buffer enqueue failure");
             }
             *remaining -= 1;
@@ -250,11 +310,18 @@ impl AgentRuntime {
     async fn flush_telemetry_batch(
         &mut self,
         events: Vec<EventEnvelope>,
-        include_all_current: bool,
+        reserve_for_current: bool,
     ) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
-        let rows = match self.buffer.peek_batch(EVENT_BATCH_SIZE) {
+        // The first evaluation still travels before control-plane work,
+        // without inserting it into a full spool or sending more than the cap.
+        let reserved = if reserve_for_current {
+            events.len().min(EVENT_BATCH_SIZE)
+        } else {
+            0
+        };
+        let rows = match self.buffer.peek_batch(EVENT_BATCH_SIZE - reserved) {
             Ok(batch) => batch,
             Err(err) => {
                 // Preserve current events without hiding the peek error.
@@ -267,7 +334,7 @@ impl AgentRuntime {
         let mut batch: Vec<_> = rows.into_iter().map(|(_, event)| event).collect();
         let mut overflow = Vec::new();
         for event in events {
-            if include_all_current || batch.len() < EVENT_BATCH_SIZE {
+            if batch.len() < EVENT_BATCH_SIZE {
                 batch.push(event);
             } else {
                 overflow.push(event);
@@ -277,24 +344,27 @@ impl AgentRuntime {
             return self.buffer_events(overflow);
         }
 
+        self.telemetry_in_flight = Some((buffered_count, batch));
+        let (_, batch) = self
+            .telemetry_in_flight
+            .as_ref()
+            .expect("send batch staged");
         #[cfg(test)]
         self.telemetry_send_batches.push(batch.len());
         #[cfg(test)]
-        let send_result = if self.telemetry_send_success {
+        let mock_success = self.telemetry_send_success;
+        #[cfg(not(test))]
+        let mock_success = false;
+        let send_result = if mock_success {
             Ok(Ok(()))
         } else {
             timeout(
                 std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
-                self.client.send_events(&batch),
+                self.client.send_events(batch),
             )
             .await
         };
-        #[cfg(not(test))]
-        let send_result = timeout(
-            std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
-            self.client.send_events(&batch),
-        )
-        .await;
+        let (_, batch) = self.telemetry_in_flight.take().expect("send batch staged");
 
         let ack_result;
         if let Err(err) = match send_result {

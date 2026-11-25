@@ -9,5 +9,6 @@
   ],
   "kernel_drops": 1,
   "perf_lost_samples": 2,
-  "pending_queue_evictions": 3
+  "pending_queue_evictions": 3,
+  "telemetry_spool_losses": 4
 }

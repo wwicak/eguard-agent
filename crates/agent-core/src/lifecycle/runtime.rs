@@ -66,6 +66,7 @@ pub struct AgentRuntime {
     #[cfg(test)]
     pub(super) telemetry_eval_budget_override: Option<std::time::Duration>,
     pub(super) tick_telemetry: Option<Vec<super::EventEnvelope>>,
+    pub(super) telemetry_in_flight: Option<(usize, Vec<super::EventEnvelope>)>,
     pub(super) response_execution_remaining: usize,
     #[cfg(test)]
     pub(super) buffer_enqueue_failure_at: Option<usize>,
@@ -516,6 +517,7 @@ impl AgentRuntime {
             #[cfg(test)]
             telemetry_eval_budget_override: None,
             tick_telemetry: None,
+            telemetry_in_flight: None,
             response_execution_remaining: super::RESPONSE_EXECUTION_BUDGET_PER_TICK,
             #[cfg(test)]
             buffer_enqueue_failure_at: None,

@@ -752,6 +752,7 @@ fn test_sensor_health_report() -> pb::SensorHealthReport {
         kernel_drops: 1,
         perf_lost_samples: 2,
         pending_queue_evictions: 3,
+        telemetry_spool_losses: 4,
     }
 }
 
@@ -1389,6 +1390,8 @@ struct ResponseMockState {
 #[derive(Default)]
 struct TelemetryMockState {
     batches: Vec<pb::TelemetryBatch>,
+    stream_fixture: Option<Vec<Result<pb::EventAck, Status>>>,
+    reject_prefixes: Option<Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -1651,16 +1654,35 @@ impl pb::telemetry_service_server::TelemetryService for MockTelemetryService {
         let mut accepted = 0i64;
         while let Some(batch) = stream.message().await? {
             accepted += batch.events.len() as i64;
-            self.state.lock().expect("state lock").batches.push(batch);
+            let mut state = self.state.lock().expect("state lock");
+            if let Some(prefixes) = &mut state.reject_prefixes {
+                prefixes.push(batch.events[0].payload_json.clone());
+                state.batches.push(batch);
+                // Match the Go server: the first batch failed before any ACK
+                // (and therefore before initial response headers).
+                return Err(Status::resource_exhausted("telemetry_queue_full"));
+            }
+            state.batches.push(batch);
         }
 
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tx.send(Ok(pb::EventAck {
-            last_event_offset: accepted,
-            events_accepted: accepted,
-        }))
-        .await
-        .map_err(|_| Status::internal("failed to send telemetry ack"))?;
+        let replies = self
+            .state
+            .lock()
+            .expect("state lock")
+            .stream_fixture
+            .clone()
+            .unwrap_or_else(|| {
+                vec![Ok(pb::EventAck {
+                    last_event_offset: accepted,
+                    events_accepted: accepted,
+                })]
+            });
+        let (tx, rx) = tokio::sync::mpsc::channel(replies.len().max(1));
+        for reply in replies {
+            tx.send(reply)
+                .await
+                .map_err(|_| Status::internal("failed to send telemetry ack"))?;
+        }
         drop(tx);
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -2865,5 +2887,166 @@ async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {
         assert_eq!(guard.threat_intel_requests[0].agent_id, "");
     }
 
+    server.shutdown().await;
+}
+
+fn delivery_event(n: i64) -> EventEnvelope {
+    EventEnvelope {
+        agent_id: "delivery-agent".into(),
+        event_type: "process_exec".into(),
+        severity: "low".into(),
+        rule_name: String::new(),
+        payload_json: format!(r#"{{"n":{n}}}"#),
+        created_at_unix: n,
+    }
+}
+
+#[tokio::test]
+async fn delivery_stream_checks_ack_and_final_status() {
+    let full = Ok(pb::EventAck {
+        events_accepted: 2,
+        last_event_offset: 2,
+    });
+    let partial = Ok(pb::EventAck {
+        events_accepted: 1,
+        last_event_offset: 1,
+    });
+    for (replies, success) in [
+        (vec![full.clone()], true),
+        (vec![], true), // clean EOF: old non-ACKing server
+        (vec![partial], false),
+        (
+            vec![
+                full,
+                Err(Status::resource_exhausted("telemetry_queue_full")),
+            ],
+            false,
+        ),
+    ] {
+        let state = Arc::new(Mutex::new(TelemetryMockState {
+            stream_fixture: Some(replies),
+            ..Default::default()
+        }));
+        let server = spawn_mock_telemetry_service(state).await;
+        let mut client = Client::with_mode("inproc".into(), TransportMode::Grpc);
+        client.set_test_channel_override(server.channel());
+        client.retry.max_attempts = 1;
+        assert_eq!(
+            client
+                .send_events_grpc(&[delivery_event(1), delivery_event(2)])
+                .await
+                .is_ok(),
+            success
+        );
+        server.shutdown().await;
+    }
+}
+
+async fn delivery_http_fixture(
+    statuses: &'static [&'static str],
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<i64>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let mut posted = Vec::new();
+        for status in statuses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 2048];
+                let len = stream.read(&mut chunk).await.unwrap();
+                assert!(len > 0);
+                request.extend_from_slice(&chunk[..len]);
+                let request = std::str::from_utf8(&request).unwrap();
+                if let Some((_, body)) = request.split_once("\r\n\r\n") {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+                        posted.push(value["event_data"]["n"].as_i64().unwrap());
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        posted
+    });
+    (address, task)
+}
+
+#[tokio::test]
+async fn delivery_http_requires_a_2xx_response() {
+    for (statuses, success) in [
+        (&["200 OK"][..], true),
+        (&["202 Accepted"][..], true),
+        (&["304 Not Modified"][..], false),
+    ] {
+        let (address, posted) = delivery_http_fixture(statuses).await;
+        let mut client = Client::new(address.to_string());
+        client.retry.max_attempts = 1;
+        assert_eq!(
+            client.send_events(&[delivery_event(1)]).await.is_ok(),
+            success
+        );
+        assert_eq!(posted.await.unwrap(), [1]);
+    }
+}
+
+#[tokio::test]
+async fn delivery_characterization_retries_grpc_and_http_prefixes_on_backpressure() {
+    let state = Arc::new(Mutex::new(TelemetryMockState {
+        reject_prefixes: Some(Vec::new()),
+        ..Default::default()
+    }));
+    let server = spawn_mock_telemetry_service(state.clone()).await;
+    let (address, posted) = delivery_http_fixture(&[
+        "202 Accepted",
+        "503 Service Unavailable",
+        "202 Accepted",
+        "503 Service Unavailable",
+    ])
+    .await;
+    let mut client = Client::with_mode(address.to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+    client.retry.max_attempts = 2;
+    client.retry.min_backoff = std::time::Duration::from_millis(20);
+    client.retry.jitter_percent = 0;
+    let batch = [delivery_event(1), delivery_event(2)];
+    let mut spool = crate::EventBuffer::memory(4096);
+    for event in batch.iter().cloned() {
+        spool.enqueue(event).unwrap();
+    }
+    let rows = spool.peek_batch(2).unwrap();
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.send_events(&batch),
+    )
+    .await
+    .unwrap();
+    if result.is_ok() {
+        spool
+            .ack(&rows.iter().map(|(id, _)| *id).collect::<Vec<_>>())
+            .unwrap();
+    }
+    assert!(result.is_err());
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+    // The server accepted prefix event 1 before rejecting event 2. The whole
+    // gRPC batch retries, and both HTTP attempts post that prefix again.
+    let mut state = state.lock().unwrap();
+    assert_eq!(
+        state.reject_prefixes.as_ref().unwrap(),
+        &[r#"{"n":1}"#, r#"{"n":1}"#]
+    );
+    let batches = std::mem::take(&mut state.batches);
+    drop(state);
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0], batches[1]);
+    assert_eq!(posted.await.unwrap(), [1, 2, 1, 2]);
+    assert_eq!(spool.pending_count(), 2);
     server.shutdown().await;
 }

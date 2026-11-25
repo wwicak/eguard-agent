@@ -25,7 +25,7 @@ impl SensorHealthSequence {
         })
     }
 
-    fn report(&self, engine: &EbpfEngine, now_unix: i64) -> SensorHealthReport {
+    fn report(&self, engine: &EbpfEngine, now_unix: i64, spool_losses: u64) -> SensorHealthReport {
         let (transport, probes, loss) = engine.sensor_health();
         let mut bounded = Vec::new();
         let mut incomplete = false;
@@ -66,6 +66,7 @@ impl SensorHealthSequence {
             kernel_drops: loss.kernel_drops.min((1 << 53) - 1),
             perf_lost_samples: loss.perf_lost_samples.min((1 << 53) - 1),
             pending_queue_evictions: loss.pending_queue_evictions.min((1 << 53) - 1),
+            telemetry_spool_losses: spool_losses.min((1 << 53) - 1),
         }
     }
 }
@@ -73,12 +74,13 @@ impl SensorHealthSequence {
 pub(super) fn sensor_health_report(
     engine: &EbpfEngine,
     now_unix: i64,
+    spool_losses: u64,
 ) -> Option<SensorHealthReport> {
     static SEQUENCE: OnceLock<Option<SensorHealthSequence>> = OnceLock::new();
     SEQUENCE
         .get_or_init(SensorHealthSequence::new)
         .as_ref()
-        .map(|s| s.report(engine, now_unix))
+        .map(|s| s.report(engine, now_unix, spool_losses))
 }
 
 #[cfg(test)]
@@ -91,9 +93,9 @@ mod tests {
         let restarted = SensorHealthSequence::new().unwrap();
         let mut engine = EbpfEngine::disabled();
         engine.record_skipped_lsm(true);
-        let initial = first.report(&engine, 10);
-        let next = first.report(&engine, 11);
-        let after_restart = restarted.report(&engine, 12);
+        let initial = first.report(&engine, 10, 0);
+        let next = first.report(&engine, 11, 2);
+        let after_restart = restarted.report(&engine, 12, 0);
         assert_eq!(
             (initial.sequence, next.sequence, after_restart.sequence),
             (1, 2, 1)
@@ -102,6 +104,8 @@ mod tests {
         assert_ne!(initial.epoch, after_restart.epoch);
         assert_eq!(initial.epoch.len(), 32);
         assert_eq!(next.observed_at_unix, 11);
+        assert_eq!(next.telemetry_spool_losses, 2);
+        assert_eq!(after_restart.telemetry_spool_losses, 0);
         assert_eq!(next.transport, "none");
         assert!(next
             .probes

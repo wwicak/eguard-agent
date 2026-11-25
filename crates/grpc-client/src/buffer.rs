@@ -18,6 +18,7 @@ pub struct OfflineBuffer {
     current_bytes: usize,
     cap_bytes: usize,
     dropped_detections: u64,
+    spool_losses: u64,
 }
 
 impl OfflineBuffer {
@@ -28,6 +29,7 @@ impl OfflineBuffer {
             current_bytes: 0,
             cap_bytes,
             dropped_detections: 0,
+            spool_losses: 0,
         }
     }
 
@@ -41,6 +43,7 @@ impl OfflineBuffer {
             if let Some(index) = self.queue.iter().position(|(_, old)| !is_detection(old)) {
                 let (_, old) = self.queue.remove(index).expect("checked index");
                 self.current_bytes = self.current_bytes.saturating_sub(estimate_event_size(&old));
+                self.note_drop(&old);
             } else {
                 self.note_drop(&event);
                 return;
@@ -55,6 +58,7 @@ impl OfflineBuffer {
     }
 
     fn note_drop(&mut self, event: &EventEnvelope) {
+        self.spool_losses = self.spool_losses.saturating_add(1);
         if is_detection(event) {
             self.dropped_detections = self.dropped_detections.saturating_add(1);
             warn!(
@@ -172,6 +176,7 @@ pub struct SqliteBuffer {
     conn: Connection,
     cap_bytes: usize,
     path: PathBuf,
+    spool_losses: u64,
 }
 
 impl SqliteBuffer {
@@ -273,11 +278,24 @@ impl SqliteBuffer {
             conn,
             cap_bytes,
             path: PathBuf::from(path),
+            spool_losses: 0,
         })
     }
 
     pub fn enqueue(&mut self, event: EventEnvelope) -> Result<()> {
-        self.enqueue_batch(&[event])
+        let result = self.enqueue_batch(&[event]);
+        if result.is_err() {
+            self.note_spool_losses(1);
+        }
+        result
+    }
+
+    pub fn spool_losses(&self) -> u64 {
+        self.spool_losses
+    }
+
+    pub fn note_spool_losses(&mut self, count: u64) {
+        self.spool_losses = self.spool_losses.saturating_add(count);
     }
 
     /// Persist a FIFO recovery batch in one transaction, avoiding a commit per row.
@@ -289,6 +307,7 @@ impl SqliteBuffer {
             |row| row.get(0),
         )?;
         let mut total_size = 0i64;
+        let mut spool_losses = 0u64;
         {
             let mut insert = tx.prepare_cached(
                 "INSERT INTO offline_events(agent_id,event_type,payload_json,created_at_unix,size_bytes,severity,rule_name,is_detection) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -296,6 +315,7 @@ impl SqliteBuffer {
             for event in events {
                 let size = estimate_event_size(event) as i64;
                 if size > self.cap_bytes as i64 {
+                    spool_losses += 1;
                     if is_detection(event) {
                         tx.execute("UPDATE offline_buffer_meta SET dropped_detections = dropped_detections + 1 WHERE id = 1", [])?;
                     }
@@ -340,6 +360,7 @@ impl SqliteBuffer {
                 tx.execute("UPDATE offline_buffer_meta SET dropped_detections = dropped_detections + 1 WHERE id = 1", [])?;
             }
             tx.execute("DELETE FROM offline_events WHERE id = ?1", params![id])?;
+            spool_losses += 1;
             bytes = bytes.saturating_sub(size).max(0);
         }
         tx.execute(
@@ -352,6 +373,7 @@ impl SqliteBuffer {
             |row| row.get(0),
         )?;
         tx.commit()?;
+        self.note_spool_losses(spool_losses);
         if dropped > dropped_before {
             warn!(
                 dropped_detections = dropped,
@@ -476,6 +498,19 @@ pub enum EventBuffer {
 }
 
 impl EventBuffer {
+    pub fn spool_losses(&self) -> u64 {
+        match self {
+            Self::Memory(buf) => buf.spool_losses,
+            Self::Sqlite(buf) => buf.spool_losses(),
+        }
+    }
+
+    pub fn note_spool_losses(&mut self, count: u64) {
+        match self {
+            Self::Memory(buf) => buf.spool_losses = buf.spool_losses.saturating_add(count),
+            Self::Sqlite(buf) => buf.note_spool_losses(count),
+        }
+    }
     pub fn memory(cap_bytes: usize) -> Self {
         Self::Memory(OfflineBuffer::new(cap_bytes))
     }

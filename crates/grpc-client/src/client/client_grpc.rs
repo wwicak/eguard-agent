@@ -34,10 +34,25 @@ impl Client {
                 events_compressed: Vec::new(),
             };
             let stream = iter([telemetry_batch]);
-            client
+            let mut replies = client
                 .stream_events(tonic::Request::new(stream))
                 .await
-                .context("stream_events RPC failed")?;
+                .context("stream_events RPC failed")?
+                .into_inner();
+            // Clean EOF without an ACK is supported for legacy peers. Otherwise
+            // require full admission and still read the terminal stream status.
+            while let Some(ack) = replies
+                .message()
+                .await
+                .context("telemetry ACK stream failed")?
+            {
+                anyhow::ensure!(
+                    ack.events_accepted == batch.len() as i64,
+                    "telemetry ACK accepted {} of {} events",
+                    ack.events_accepted,
+                    batch.len()
+                );
+            }
             Ok(())
         })
         .await

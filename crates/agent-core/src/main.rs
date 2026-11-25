@@ -130,6 +130,10 @@ async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
         if let Err(err) = runtime.report_shutdown_tamper(now, "sigterm").await {
             warn!(error = %err, "failed to emit shutdown tamper alert");
         }
+        #[cfg(target_os = "linux")]
+        if let Err(err) = runtime.persist_shutdown_telemetry().await {
+            warn!(error = %err, "failed to spool pending shutdown telemetry");
+        }
     }
 
     #[cfg(target_os = "linux")]

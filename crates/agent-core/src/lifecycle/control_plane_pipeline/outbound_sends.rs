@@ -35,7 +35,11 @@ impl AgentRuntime {
         let runtime = self.build_heartbeat_runtime_payload(baseline_status);
         #[cfg(target_os = "linux")]
         let runtime = HeartbeatRuntimeEnvelope {
-            sensor_health: super::super::sensor_health::sensor_health_report(&self.ebpf_engine, now_unix),
+            sensor_health: super::super::sensor_health::sensor_health_report(
+                &self.ebpf_engine,
+                now_unix,
+                self.buffer.spool_losses(),
+            ),
             ..runtime
         };
 

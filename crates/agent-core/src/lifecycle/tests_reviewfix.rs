@@ -196,7 +196,7 @@ async fn first_send_outcome_controls_same_tick_maintenance() {
     runtime.tick(now).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 1);
     assert_eq!(runtime.buffer.pending_count(), EVENT_BATCH_SIZE + 1);
-    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE]);
     assert_eq!(runtime.last_policy_fetch_unix, None);
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
     let retained = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 1).unwrap();
@@ -224,8 +224,13 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
     queue_event(&mut runtime);
     runtime.tick(now + 1).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 0);
-    assert_eq!(runtime.buffer.pending_count(), 0);
-    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
+    assert_eq!(runtime.buffer.pending_count(), 1);
+    let remaining = runtime.buffer.peek_batch(1).unwrap();
+    assert_eq!(
+        remaining[0].1.created_at_unix,
+        (EVENT_BATCH_SIZE - 1) as i64
+    );
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE]);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now + 1));
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
     assert!(runtime
@@ -830,4 +835,45 @@ fn compliance_policy_transition_prunes_full_old_context() {
         "obsolete policy dedupe entries must be pruned"
     );
     assert!(runtime.collect_compliance_alerts(&result, 123).is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn delivery_shutdown_persists_staged_and_unacked_fresh_without_reenqueuing_sent_prefix() {
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
+    let path = path.to_str().unwrap();
+    runtime.buffer = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    runtime.buffer.enqueue(event(1)).unwrap();
+    runtime.telemetry_in_flight = Some((1, vec![event(1), event(2)]));
+    runtime.tick_telemetry = Some(vec![event(3)]);
+    runtime.persist_shutdown_telemetry().await.unwrap();
+    let reopened = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    let timestamps: Vec<_> = reopened
+        .peek_batch(4)
+        .unwrap()
+        .into_iter()
+        .map(|(_, event)| event.created_at_unix)
+        .collect();
+    assert_eq!(timestamps, [1, 2, 3]);
+    drop(reopened);
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn delivery_shutdown_spool_wait_is_bounded() {
+    let (release, blocked) = std::sync::mpsc::channel();
+    let start = std::time::Instant::now();
+    let error = super::telemetry_pipeline::run_shutdown_spool_write(move || {
+        blocked.recv().unwrap();
+        Ok(())
+    })
+    .await
+    .unwrap_err();
+    release.send(()).unwrap();
+    assert!(error.to_string().contains("exceeded 1s budget"));
+    assert!(start.elapsed() < std::time::Duration::from_millis(1500));
 }

@@ -17,6 +17,7 @@ pub(super) fn retry_sqlite_buffer(
     *last_attempt = Some(now);
     let recovery = (|| -> anyhow::Result<()> {
         let mut sqlite = grpc_client::SqliteBuffer::new(path, cap_bytes)?;
+        let prior_losses = buffer.spool_losses();
         // Keep existing SQLite rows ahead of fallback events. Acknowledge each
         // memory row only after its durable enqueue; a failed migration can retry.
         loop {
@@ -25,9 +26,12 @@ pub(super) fn retry_sqlite_buffer(
                 break;
             }
             let (ids, events): (Vec<_>, Vec<_>) = batch.into_iter().unzip();
+            let before = sqlite.spool_losses();
             sqlite.enqueue_batch(&events)?;
+            buffer.note_spool_losses(sqlite.spool_losses() - before);
             buffer.ack(&ids)?;
         }
+        sqlite.note_spool_losses(prior_losses);
         *buffer = EventBuffer::Sqlite(sqlite);
         Ok(())
     })();

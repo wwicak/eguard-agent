@@ -87,7 +87,12 @@ impl Client {
             let payloads = payloads.clone();
             async move {
                 for payload in &payloads {
-                    self.post_json_request(&url, payload, "telemetry").await?;
+                    let response = self.post_json_request(&url, payload, "telemetry").await?;
+                    anyhow::ensure!(
+                        response.status().is_success(),
+                        "telemetry rejected with HTTP {}",
+                        response.status()
+                    );
                 }
                 Ok(())
             }
@@ -408,7 +413,11 @@ impl Client {
         self.with_retry(operation_name, || {
             let url = url.clone();
             let body = body.clone();
-            async move { self.post_json_request(&url, &body, request_name).await }
+            async move {
+                self.post_json_request(&url, &body, request_name)
+                    .await
+                    .map(|_| ())
+            }
         })
         .await
     }
@@ -418,7 +427,7 @@ impl Client {
         url: &str,
         payload: &T,
         request_name: &str,
-    ) -> Result<()> {
+    ) -> Result<reqwest::Response> {
         self.http
             .post(url)
             .json(payload)
@@ -426,8 +435,7 @@ impl Client {
             .await
             .with_context(|| format!("failed sending {} to {}", request_name, url))?
             .error_for_status()
-            .with_context(|| format!("{} rejected by {}", request_name, url))?;
-        Ok(())
+            .with_context(|| format!("{} rejected by {}", request_name, url))
     }
 
     async fn get_json_with_retry<T: DeserializeOwned>(
