@@ -733,12 +733,8 @@ fn push_raw_record(
         true
     };
     if lost {
-        let _ =
-            records_sink
-                .evictions
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                    Some(count.saturating_add(1))
-                });
+        // A u64 incremented once per lost record cannot realistically wrap.
+        records_sink.evictions.fetch_add(1, Ordering::Relaxed);
     }
 
     if let Some(mut dropped) = dropped_record {
