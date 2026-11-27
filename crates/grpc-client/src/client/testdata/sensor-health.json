@@ -1,0 +1,14 @@
+{
+  "epoch": "0123456789abcdef0123456789abcdef",
+  "sequence": 42,
+  "observed_at_unix": 1700000000,
+  "transport": "perf_buffer",
+  "probes": [
+    {"name": "eguard_sys_enter_openat", "status": "attached", "reason": ""},
+    {"name": "eguard_sys_enter_openat2", "status": "unsupported", "reason": "hook_missing"}
+  ],
+  "kernel_drops": 1,
+  "perf_lost_samples": 2,
+  "pending_queue_evictions": 3,
+  "telemetry_spool_losses": 4
+}

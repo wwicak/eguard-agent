@@ -24,6 +24,8 @@ mod response_actions;
 mod response_playbook;
 mod runtime;
 mod runtime_mode;
+#[cfg(target_os = "linux")]
+mod sensor_health;
 mod self_protect;
 mod storage_hygiene;
 mod telemetry;
@@ -38,6 +40,8 @@ mod tick;
 mod timing;
 mod types;
 mod uninstall_auth;
+#[cfg(target_os = "linux")]
+mod update_window;
 
 mod bundle_path;
 mod command_control_pipeline;

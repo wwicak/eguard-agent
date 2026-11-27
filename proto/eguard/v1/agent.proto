@@ -127,6 +127,24 @@ message EnrollResponse {
   string issued_profile = 21;
 }
 
+message SensorProbe {
+  string name = 1;
+  string status = 2;
+  string reason = 3;
+}
+
+message SensorHealthReport {
+  string epoch = 1;
+  uint64 sequence = 2;
+  int64 observed_at_unix = 3;
+  string transport = 4;
+  repeated SensorProbe probes = 5;
+  uint64 kernel_drops = 6;
+  uint64 perf_lost_samples = 7;
+  uint64 pending_queue_evictions = 8;
+  uint64 telemetry_spool_losses = 9;
+}
+
 message HeartbeatRequest {
   string agent_id = 1;
   int64 timestamp = 2;
@@ -136,6 +154,7 @@ message HeartbeatRequest {
   BaselineReport baseline_report = 6;
   string config_version = 7;
   int64 buffered_events = 8;
+  SensorHealthReport sensor_health = 9;
 
   // Legacy compatibility fields.
   string compliance_status = 20;

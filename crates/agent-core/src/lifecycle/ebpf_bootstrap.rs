@@ -119,7 +119,11 @@ pub(super) fn try_init_ebpf_from_object_dir(
     }
 
     match EbpfEngine::from_elfs(&object_paths, map_name) {
-        Ok(engine) => {
+        Ok(mut engine) => {
+            #[cfg(target_os = "linux")]
+            if !capabilities.lsm_available && objects_dir.join("lsm_block_bpf.o").exists() {
+                engine.record_skipped_lsm(capabilities.lsm_list_known);
+            }
             let stats = engine.stats();
             info!(
                 objects_dir = %objects_dir.display(),

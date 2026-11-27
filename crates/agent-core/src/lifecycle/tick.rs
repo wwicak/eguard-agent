@@ -46,6 +46,7 @@ impl AgentRuntime {
                 events_sent = self.pipeline_events_sent,
                 raw_event_backlog = self.raw_event_backlog.len(),
                 buffer_pending = self.buffer.pending_count(),
+                telemetry_spool_losses = self.buffer.spool_losses(),
                 suppressed_static_reads_total = self.telemetry_noise.static_reads,
                 suppressed_negative_ml_total = self.telemetry_noise.negative_ml,
                 suppressed_repeats_total = self.telemetry_noise.repeated,

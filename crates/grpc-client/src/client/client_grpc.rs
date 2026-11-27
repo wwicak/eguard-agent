@@ -34,10 +34,30 @@ impl Client {
                 events_compressed: Vec::new(),
             };
             let stream = iter([telemetry_batch]);
-            client
+            let mut replies = client
                 .stream_events(tonic::Request::new(stream))
                 .await
-                .context("stream_events RPC failed")?;
+                .context("stream_events RPC failed")?
+                .into_inner();
+            let expected = batch.len() as i64;
+            let mut accepted = 0;
+            while let Some(ack) = replies
+                .message()
+                .await
+                .context("telemetry ACK stream failed")?
+            {
+                anyhow::ensure!(
+                    (0..=expected - accepted).contains(&ack.events_accepted),
+                    "invalid telemetry ACK count {} with {} remaining",
+                    ack.events_accepted,
+                    expected - accepted
+                );
+                accepted += ack.events_accepted;
+            }
+            anyhow::ensure!(
+                accepted == expected,
+                "telemetry ACK accepted {accepted} of {expected} events"
+            );
             Ok(())
         })
         .await
@@ -147,6 +167,7 @@ impl Client {
                     }),
                     config_version: config_version.to_string(),
                     buffered_events: runtime.map(|r| r.buffered_events).unwrap_or(0),
+                    sensor_health: runtime.and_then(|r| r.sensor_health.clone()),
                     compliance_status: compliance_status.to_string(),
                     sent_at_unix: now_unix(),
                 })

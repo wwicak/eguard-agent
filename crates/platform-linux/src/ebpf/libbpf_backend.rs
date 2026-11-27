@@ -1,5 +1,6 @@
 // Module-level cfg is already applied in ebpf.rs; no need to duplicate here.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -7,12 +8,14 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use libbpf_rs::{MapCore, MapFlags, MapType, PerfBuffer};
+use libbpf_rs::{ErrorKind, MapCore, MapFlags, MapType, PerfBuffer};
 use tracing::{debug, info, warn};
 
 use super::backend::RingBufferBackend;
 use super::codec::parse_fallback_dropped_events;
-use super::types::{EbpfError, PollBatch, Result, FALLBACK_RINGBUF_STATE_SIZE};
+use super::types::{
+    EbpfError, PollBatch, ProbeHealth, Result, SensorLoss, FALLBACK_RINGBUF_STATE_SIZE,
+};
 
 pub(super) struct LibbpfRingBufferBackend {
     // Drop order matters: ring_buffer must drop FIRST (releases map fd
@@ -23,7 +26,7 @@ pub(super) struct LibbpfRingBufferBackend {
     record_pool: RecordPool,
     record_budget: RecordBudget,
     drop_counter_sources: Vec<DropCounterSource>,
-    failed_probes: Vec<String>,
+    failed_probes: Vec<ProbeFailure>,
     _loaded: Vec<LoadedObject>,
 }
 
@@ -39,12 +42,50 @@ pub(super) struct LibbpfPerfBufferBackend {
     record_pool: RecordPool,
     record_budget: RecordBudget,
     drop_counter_sources: Vec<DropCounterSource>,
-    failed_probes: Vec<String>,
+    failed_probes: Vec<ProbeFailure>,
     _loaded: Vec<LoadedObject>,
 }
 
-type RecordSink = Arc<Mutex<Vec<Vec<u8>>>>;
+type RecordSink = Arc<PendingRecords>;
 type RecordPool = Arc<Mutex<Vec<Vec<u8>>>>;
+
+#[derive(Default)]
+struct PendingRecords {
+    records: Mutex<VecDeque<Vec<u8>>>,
+    evictions: AtomicU64,
+}
+
+fn pending_evictions(records: &RecordSink) -> u64 {
+    records.evictions.load(Ordering::Relaxed)
+}
+
+struct ProbeFailure {
+    health: ProbeHealth,
+    diagnostic: String,
+}
+
+impl ProbeFailure {
+    fn new(name: String, diagnostic: String, status: &'static str, reason: &'static str) -> Self {
+        Self {
+            diagnostic: format!("{name}:{diagnostic}"),
+            health: ProbeHealth {
+                name,
+                status,
+                reason,
+            },
+        }
+    }
+
+    fn attach(name: String, diagnostic: String, kind: ErrorKind) -> Self {
+        match kind {
+            ErrorKind::NotFound => Self::new(name, diagnostic, "unsupported", "hook_missing"),
+            ErrorKind::Unsupported => {
+                Self::new(name, diagnostic, "unsupported", "hook_unsupported")
+            }
+            _ => Self::new(name, diagnostic, "failed", "attach_failed"),
+        }
+    }
+}
 
 const LOW_MEMORY_HOST_THRESHOLD_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const DEFAULT_MAX_PENDING_RAW_RECORDS: usize = 8_192;
@@ -101,6 +142,7 @@ struct DropCounterSource {
     owner_path: PathBuf,
     map_handle: libbpf_rs::MapHandle,
     last_seen: u64,
+    cumulative: u64,
 }
 
 struct EventMapSource {
@@ -182,7 +224,7 @@ impl LibbpfPerfBufferBackend {
 fn load_objects_with_degradation(
     elf_paths: &[PathBuf],
     event_map_name: &str,
-) -> Result<(Vec<LoadedObject>, Vec<String>)> {
+) -> Result<(Vec<LoadedObject>, Vec<ProbeFailure>)> {
     if elf_paths.is_empty() {
         return Err(EbpfError::Backend("no eBPF ELF files provided".to_string()));
     }
@@ -191,13 +233,19 @@ fn load_objects_with_degradation(
     let mut loaded = Vec::with_capacity(elf_paths.len());
     for path in elf_paths {
         match load_object_with_degradation(path, event_map_name, &mut failed_probes) {
-            Ok(object) => loaded.push(object),
+            Ok(Some(object)) => loaded.push(object),
+            Ok(None) => {} // Individual optional attach outcomes are already recorded.
             Err(err) if is_optional_ebpf_object_path(path) => {
                 let optional = path
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("optional-ebpf-object");
-                failed_probes.push(format!("{}:{}", optional, err));
+                failed_probes.push(ProbeFailure::new(
+                    optional.to_string(),
+                    err.to_string(),
+                    "failed",
+                    "object_load_failed",
+                ));
                 warn!(
                     error = %err,
                     path = %path.display(),
@@ -229,7 +277,11 @@ fn load_objects_with_degradation(
     );
 
     if !failed_probes.is_empty() {
-        warn!(probes = ?failed_probes, "some eBPF probes failed to attach (degraded mode)");
+        let diagnostics: Vec<_> = failed_probes
+            .iter()
+            .map(|probe| &probe.diagnostic)
+            .collect();
+        warn!(probes = ?diagnostics, "some eBPF probes failed to attach (degraded mode)");
     }
 
     Ok((loaded, failed_probes))
@@ -256,8 +308,8 @@ const EVENT_TRANSPORT_LOW_MEM_THRESHOLD: u64 = LOW_MEMORY_HOST_THRESHOLD_BYTES;
 fn load_object_with_degradation(
     path: &Path,
     event_map_name: &str,
-    failed_probes: &mut Vec<String>,
-) -> Result<LoadedObject> {
+    failed_probes: &mut Vec<ProbeFailure>,
+) -> Result<Option<LoadedObject>> {
     let open_obj = libbpf_rs::ObjectBuilder::default()
         .open_file(path)
         .map_err(|err| EbpfError::Backend(format!("open ELF '{}': {}", path.display(), err)))?;
@@ -304,13 +356,13 @@ fn load_object_with_degradation(
                     || name.contains("openat2");
 
                 if is_optional {
-                    failed_probes.push(format!("{}:{}", name, err));
                     eprintln!(
                         "eg-agent: optional eBPF probe '{}' from '{}' failed to attach (non-fatal): {}",
                         name,
                         path.display(),
                         err
                     );
+                    failed_probes.push(ProbeFailure::attach(name, err.to_string(), err.kind()));
                 } else {
                     return Err(EbpfError::Backend(format!(
                         "attach program '{}' from '{}': {}",
@@ -324,6 +376,11 @@ fn load_object_with_degradation(
     }
 
     if attached_programs.is_empty() && total_programs > 0 {
+        // A wholly optional object with no hooks attached is still skipped.
+        // Don't turn an unsupported hook into an object-level load failure.
+        if is_optional_ebpf_object_path(path) {
+            return Ok(None);
+        }
         return Err(EbpfError::Backend(format!(
             "no programs attached from '{}' ({} total, all failed)",
             path.display(),
@@ -331,15 +388,27 @@ fn load_object_with_degradation(
         )));
     }
 
-    Ok(LoadedObject {
+    Ok(Some(LoadedObject {
         path: path.to_path_buf(),
         object,
         _links: links,
         attached_programs,
-    })
+    }))
 }
 
 impl RingBufferBackend for LibbpfRingBufferBackend {
+    fn sensor_transport(&self) -> &'static str {
+        "ring_buffer"
+    }
+
+    fn sensor_loss(&self) -> SensorLoss {
+        SensorLoss {
+            kernel_drops: cumulative_kernel_drops(&self.drop_counter_sources),
+            perf_lost_samples: 0,
+            pending_queue_evictions: pending_evictions(&self.records),
+        }
+    }
+
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch> {
         if timeout.is_zero() {
             self.ring_buffer
@@ -366,7 +435,17 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
     }
 
     fn failed_probes(&self) -> Vec<String> {
-        self.failed_probes.clone()
+        self.failed_probes
+            .iter()
+            .map(|probe| probe.diagnostic.clone())
+            .collect()
+    }
+
+    fn unattached_probes(&self) -> Vec<ProbeHealth> {
+        self.failed_probes
+            .iter()
+            .map(|probe| probe.health.clone())
+            .collect()
     }
 
     fn attached_program_count(&self) -> usize {
@@ -379,6 +458,18 @@ impl RingBufferBackend for LibbpfRingBufferBackend {
 }
 
 impl RingBufferBackend for LibbpfPerfBufferBackend {
+    fn sensor_transport(&self) -> &'static str {
+        "perf_buffer"
+    }
+
+    fn sensor_loss(&self) -> SensorLoss {
+        SensorLoss {
+            kernel_drops: cumulative_kernel_drops(&self.drop_counter_sources),
+            perf_lost_samples: self.perf_lost_records.load(Ordering::Relaxed),
+            pending_queue_evictions: pending_evictions(&self.records),
+        }
+    }
+
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch> {
         if timeout.is_zero() {
             consume_perf_buffers(&self.perf_buffers)?;
@@ -403,7 +494,17 @@ impl RingBufferBackend for LibbpfPerfBufferBackend {
     }
 
     fn failed_probes(&self) -> Vec<String> {
-        self.failed_probes.clone()
+        self.failed_probes
+            .iter()
+            .map(|probe| probe.diagnostic.clone())
+            .collect()
+    }
+
+    fn unattached_probes(&self) -> Vec<ProbeHealth> {
+        self.failed_probes
+            .iter()
+            .map(|probe| probe.health.clone())
+            .collect()
     }
 
     fn attached_program_count(&self) -> usize {
@@ -441,6 +542,7 @@ fn collect_drop_counter_sources(loaded: &[LoadedObject]) -> Result<Vec<DropCount
                 owner_path: loaded_object.path.clone(),
                 map_handle,
                 last_seen: 0,
+                cumulative: 0,
             });
         }
     }
@@ -504,7 +606,7 @@ fn build_ring_buffer(
     event_map_name: &str,
     record_budget: RecordBudget,
 ) -> Result<(libbpf_rs::RingBuffer<'static>, RecordSink, RecordPool)> {
-    let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let records = RecordSink::default();
     let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let map_sources = collect_event_map_sources(loaded, event_map_name)?;
 
@@ -554,7 +656,7 @@ fn build_perf_buffers(
     event_map_name: &str,
     record_budget: RecordBudget,
 ) -> Result<(Vec<PerfBufferSlot>, RecordSink, RecordPool, Arc<AtomicU64>)> {
-    let records = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let records = RecordSink::default();
     let record_pool = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let perf_lost_records = Arc::new(AtomicU64::new(0));
     let map_sources = collect_event_map_sources(loaded, event_map_name)?;
@@ -620,11 +722,19 @@ fn push_raw_record(
     record.extend_from_slice(raw);
 
     let mut dropped_record = None;
-    if let Ok(mut guard) = records_sink.lock() {
+    let lost = if let Ok(mut guard) = records_sink.records.lock() {
         if guard.len() >= max_pending_raw_records {
-            dropped_record = Some(guard.swap_remove(0));
+            dropped_record = guard.pop_front();
         }
-        guard.push(record);
+        guard.push_back(record);
+        dropped_record.is_some()
+    } else {
+        // The callback could not enqueue this record in the poisoned sink.
+        true
+    };
+    if lost {
+        // A u64 incremented once per lost record cannot realistically wrap.
+        records_sink.evictions.fetch_add(1, Ordering::Relaxed);
     }
 
     if let Some(mut dropped) = dropped_record {
@@ -719,9 +829,18 @@ fn reclaim_raw_records_to_pool(
 
 fn drain_record_sink(records: &RecordSink) -> Result<Vec<Vec<u8>>> {
     let mut guard = records
+        .records
         .lock()
         .map_err(|_| EbpfError::Backend("failed to collect eBPF event records".to_string()))?;
-    Ok(std::mem::take(&mut *guard))
+    let drained = std::mem::take(&mut *guard);
+    drop(guard);
+    Ok(drained.into())
+}
+
+fn cumulative_kernel_drops(sources: &[DropCounterSource]) -> u64 {
+    sources
+        .iter()
+        .fold(0, |total, source| total.saturating_add(source.cumulative))
 }
 
 fn sample_drop_counters(sources: &mut [DropCounterSource]) -> Result<u64> {
@@ -750,6 +869,7 @@ fn sample_drop_counters(sources: &mut [DropCounterSource]) -> Result<u64> {
 
         let delta = total.saturating_sub(source.last_seen);
         source.last_seen = total;
+        source.cumulative = source.cumulative.saturating_add(delta);
         dropped = dropped.saturating_add(delta);
     }
 
@@ -809,6 +929,75 @@ fn sample_perf_lost_records(counter: &Arc<AtomicU64>, last_seen: &mut u64) -> u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_records_evict_oldest_and_preserve_arrival_order() {
+        let records = RecordSink::default();
+        let pool = RecordPool::default();
+
+        for sample in 1..=5 {
+            push_raw_record(&[sample], &records, &pool, 3);
+        }
+        assert_eq!(
+            drain_record_sink(&records).unwrap(),
+            vec![vec![3], vec![4], vec![5]],
+            "overflow must retain the newest records in callback order"
+        );
+
+        for sample in 6..=7 {
+            push_raw_record(&[sample], &records, &pool, 3);
+        }
+        assert_eq!(drain_record_sink(&records).unwrap(), vec![vec![6], vec![7]]);
+    }
+
+    #[test]
+    fn pending_queue_health_counts_only_evictions() {
+        let records = RecordSink::default();
+        let pool = RecordPool::default();
+        for sample in 1..=3 {
+            push_raw_record(&[sample], &records, &pool, 3);
+        }
+        assert_eq!(pending_evictions(&records), 0);
+        push_raw_record(&[4], &records, &pool, 3);
+        assert_eq!(pending_evictions(&records), 1);
+        push_raw_record(&[5], &records, &pool, 3);
+        assert_eq!(pending_evictions(&records), 2);
+        drain_record_sink(&records).unwrap();
+        push_raw_record(&[6], &records, &pool, 3);
+        assert_eq!(pending_evictions(&records), 2);
+    }
+
+    #[test]
+    fn pending_queue_health_counts_rejection_on_poisoned_sink() {
+        let records = RecordSink::default();
+        let pool = RecordPool::default();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = records.records.lock().unwrap();
+            panic!("poison fixture");
+        });
+        push_raw_record(&[1], &records, &pool, 3);
+        assert_eq!(pending_evictions(&records), 1);
+    }
+
+    #[test]
+    fn optional_attach_health_distinguishes_unsupported_and_failed() {
+        for (kind, status, reason) in [
+            (ErrorKind::Unsupported, "unsupported", "hook_unsupported"),
+            (
+                libbpf_rs::Error::from_raw_os_error(libc::ENOENT).kind(),
+                "unsupported",
+                "hook_missing",
+            ),
+            (ErrorKind::PermissionDenied, "failed", "attach_failed"),
+        ] {
+            let result =
+                ProbeFailure::attach("fixture".to_string(), "local diagnostic".to_string(), kind);
+            assert_eq!(result.health.name, "fixture");
+            assert_eq!(result.health.status, status);
+            assert_eq!(result.health.reason, reason);
+            assert_eq!(result.diagnostic, "fixture:local diagnostic");
+        }
+    }
 
     #[test]
     fn parse_memtotal_line_reads_kib_value() {

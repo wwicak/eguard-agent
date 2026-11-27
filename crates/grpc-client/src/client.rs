@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -130,6 +130,10 @@ impl Client {
         self.pending_commands.push_back(command);
     }
 
+    pub fn transport_mode(&self) -> TransportMode {
+        self.mode
+    }
+
     pub fn retry_policy(&self) -> &RetryPolicy {
         &self.retry
     }
@@ -147,13 +151,24 @@ impl Client {
     }
 
     pub async fn send_events(&self, batch: &[EventEnvelope]) -> Result<()> {
+        self.send_events_with_progress(batch, &AtomicUsize::new(0))
+            .await
+    }
+
+    /// `accepted` records the admitted prefix even if the caller drops this future.
+    pub async fn send_events_with_progress(
+        &self,
+        batch: &[EventEnvelope],
+        accepted: &AtomicUsize,
+    ) -> Result<()> {
+        accepted.store(0, Ordering::Relaxed);
         self.ensure_online()?;
         if batch.is_empty() {
             return Ok(());
         }
 
         match self.mode {
-            TransportMode::Http => self.send_events_http(batch).await?,
+            TransportMode::Http => self.send_events_http(batch, accepted).await?,
             TransportMode::Grpc => {
                 if self.grpc_reporting_force_http.load(Ordering::Relaxed) {
                     match self.send_events_grpc(batch).await {
@@ -166,7 +181,7 @@ impl Client {
                                 error = %err,
                                 "gRPC telemetry send still unavailable; using HTTP telemetry fallback"
                             );
-                            self.send_events_http(batch).await?;
+                            self.send_events_http(batch, accepted).await?;
                         }
                     }
                 } else if let Err(err) = self.send_events_grpc(batch).await {
@@ -176,11 +191,12 @@ impl Client {
                     );
                     self.grpc_reporting_force_http
                         .store(true, Ordering::Relaxed);
-                    self.send_events_http(batch).await?;
+                    self.send_events_http(batch, accepted).await?;
                 }
             }
         }
 
+        accepted.store(batch.len(), Ordering::Relaxed);
         info!(count = batch.len(), server = %self.server_addr, mode = ?self.mode, "sent event batch");
         Ok(())
     }

@@ -731,6 +731,31 @@ async fn send_heartbeat_offline_returns_error() {
     assert!(err.to_string().contains("server unreachable"));
 }
 
+fn test_sensor_health_report() -> pb::SensorHealthReport {
+    pb::SensorHealthReport {
+        epoch: "0123456789abcdef0123456789abcdef".to_string(),
+        sequence: 42,
+        observed_at_unix: 1_700_000_000,
+        transport: "perf_buffer".to_string(),
+        probes: vec![
+            pb::SensorProbe {
+                name: "eguard_sys_enter_openat".to_string(),
+                status: "attached".to_string(),
+                reason: String::new(),
+            },
+            pb::SensorProbe {
+                name: "eguard_sys_enter_openat2".to_string(),
+                status: "unsupported".to_string(),
+                reason: "hook_missing".to_string(),
+            },
+        ],
+        kernel_drops: 1,
+        perf_lost_samples: 2,
+        pending_queue_evictions: 3,
+        telemetry_spool_losses: 4,
+    }
+}
+
 #[tokio::test]
 // AC-GRP-010 AC-GRP-019 AC-GRP-081
 async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
@@ -766,6 +791,10 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
         );
         assert_eq!(payload["resource_usage"]["memory_rss_bytes"], 456789);
         assert_eq!(payload["resource_usage"]["disk_usage_bytes"], 123456);
+        // Mirrored by the Go decoder/validator test in PLAT-SERVER.
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/sensor-health.json")).unwrap();
+        assert_eq!(payload["sensor_health"], golden);
 
         let response =
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
@@ -799,6 +828,7 @@ async fn send_heartbeat_http_includes_runtime_status_and_resource_usage() {
                     events_per_second: 14.5,
                 },
                 buffered_events: 9,
+                sensor_health: Some(test_sensor_health_report()),
             }),
         )
         .await
@@ -1360,6 +1390,8 @@ struct ResponseMockState {
 #[derive(Default)]
 struct TelemetryMockState {
     batches: Vec<pb::TelemetryBatch>,
+    stream_fixture: Option<Vec<Result<pb::EventAck, Status>>>,
+    reject_prefixes: Option<Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -1622,16 +1654,35 @@ impl pb::telemetry_service_server::TelemetryService for MockTelemetryService {
         let mut accepted = 0i64;
         while let Some(batch) = stream.message().await? {
             accepted += batch.events.len() as i64;
-            self.state.lock().expect("state lock").batches.push(batch);
+            let mut state = self.state.lock().expect("state lock");
+            if let Some(prefixes) = &mut state.reject_prefixes {
+                prefixes.push(batch.events[0].payload_json.clone());
+                state.batches.push(batch);
+                // Match the Go server: the first batch failed before any ACK
+                // (and therefore before initial response headers).
+                return Err(Status::resource_exhausted("telemetry_queue_full"));
+            }
+            state.batches.push(batch);
         }
 
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tx.send(Ok(pb::EventAck {
-            last_event_offset: accepted,
-            events_accepted: accepted,
-        }))
-        .await
-        .map_err(|_| Status::internal("failed to send telemetry ack"))?;
+        let replies = self
+            .state
+            .lock()
+            .expect("state lock")
+            .stream_fixture
+            .clone()
+            .unwrap_or_else(|| {
+                vec![Ok(pb::EventAck {
+                    last_event_offset: accepted,
+                    events_accepted: accepted,
+                })]
+            });
+        let (tx, rx) = tokio::sync::mpsc::channel(replies.len().max(1));
+        for reply in replies {
+            tx.send(reply)
+                .await
+                .map_err(|_| Status::internal("failed to send telemetry ack"))?;
+        }
         drop(tx);
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -2277,6 +2328,7 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
                     events_per_second: 42.0,
                 },
                 buffered_events: 7,
+                sensor_health: Some(test_sensor_health_report()),
             }),
         )
         .await
@@ -2290,6 +2342,7 @@ async fn send_heartbeat_grpc_captures_agent_and_compliance_and_config_version() 
         assert_eq!(heartbeat.compliance_status, "compliant");
         assert_eq!(heartbeat.config_version, "cfg-v7");
         assert_eq!(heartbeat.buffered_events, 7);
+        assert_eq!(heartbeat.sensor_health.as_ref(), Some(&test_sensor_health_report()));
         assert_eq!(heartbeat.status.as_ref().map(|s| s.mode), Some(1));
         assert_eq!(
             heartbeat
@@ -2835,4 +2888,184 @@ async fn fetch_latest_threat_intel_grpc_returns_some_with_expected_fields() {
     }
 
     server.shutdown().await;
+}
+
+fn delivery_event(n: i64) -> EventEnvelope {
+    EventEnvelope {
+        agent_id: "delivery-agent".into(),
+        event_type: "process_exec".into(),
+        severity: "low".into(),
+        rule_name: String::new(),
+        payload_json: format!(r#"{{"n":{n}}}"#),
+        created_at_unix: n,
+    }
+}
+
+#[tokio::test]
+async fn delivery_stream_checks_ack_and_final_status() {
+    let full = Ok(pb::EventAck {
+        events_accepted: 2,
+        last_event_offset: 2,
+    });
+    let partial = Ok(pb::EventAck {
+        events_accepted: 1,
+        last_event_offset: 1,
+    });
+    for (replies, success) in [
+        (vec![full.clone()], true),
+        (vec![partial.clone(), partial.clone()], true),
+        (vec![], false), // deployed streams ACK every successful batch
+        (vec![partial], false),
+        (
+            vec![
+                full,
+                Err(Status::resource_exhausted("telemetry_queue_full")),
+            ],
+            false,
+        ),
+    ] {
+        let state = Arc::new(Mutex::new(TelemetryMockState {
+            stream_fixture: Some(replies),
+            ..Default::default()
+        }));
+        let server = spawn_mock_telemetry_service(state).await;
+        let mut client = Client::with_mode("inproc".into(), TransportMode::Grpc);
+        client.set_test_channel_override(server.channel());
+        client.retry.max_attempts = 1;
+        assert_eq!(
+            client
+                .send_events_grpc(&[delivery_event(1), delivery_event(2)])
+                .await
+                .is_ok(),
+            success
+        );
+        server.shutdown().await;
+    }
+}
+
+async fn delivery_http_fixture(
+    statuses: &'static [&'static str],
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<i64>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let mut posted = Vec::new();
+        for status in statuses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 2048];
+                let len = stream.read(&mut chunk).await.unwrap();
+                assert!(len > 0);
+                request.extend_from_slice(&chunk[..len]);
+                let request = std::str::from_utf8(&request).unwrap();
+                if let Some((_, body)) = request.split_once("\r\n\r\n") {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+                        posted.push(value["event_data"]["n"].as_i64().unwrap());
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        posted
+    });
+    (address, task)
+}
+
+#[tokio::test]
+async fn delivery_http_requires_the_admission_status() {
+    for (statuses, success) in [
+        (&["200 OK"][..], false),
+        (&["202 Accepted"][..], true),
+        (&["304 Not Modified"][..], false),
+    ] {
+        let (address, posted) = delivery_http_fixture(statuses).await;
+        let mut client = Client::new(address.to_string());
+        client.retry.max_attempts = 1;
+        assert_eq!(
+            client.send_events(&[delivery_event(1)]).await.is_ok(),
+            success
+        );
+        assert_eq!(posted.await.unwrap(), [1]);
+    }
+}
+
+#[tokio::test]
+async fn delivery_fallback_preserves_grpc_replay_but_resumes_http_prefix() {
+    let state = Arc::new(Mutex::new(TelemetryMockState {
+        reject_prefixes: Some(Vec::new()),
+        ..Default::default()
+    }));
+    let server = spawn_mock_telemetry_service(state.clone()).await;
+    let (address, posted) = delivery_http_fixture(&[
+        "202 Accepted",
+        "503 Service Unavailable",
+        "503 Service Unavailable",
+    ])
+    .await;
+    let mut client = Client::with_mode(address.to_string(), TransportMode::Grpc);
+    client.set_test_channel_override(server.channel());
+    client.retry.max_attempts = 2;
+    client.retry.min_backoff = std::time::Duration::from_millis(20);
+    client.retry.jitter_percent = 0;
+    let batch = [delivery_event(1), delivery_event(2)];
+    let mut spool = crate::EventBuffer::memory(4096);
+    for event in batch.iter().cloned() {
+        spool.enqueue(event).unwrap();
+    }
+    let rows = spool.peek_batch(2).unwrap();
+    let accepted = AtomicUsize::new(0);
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.send_events_with_progress(&batch, &accepted),
+    )
+    .await
+    .unwrap();
+    let accepted = accepted.load(Ordering::Relaxed);
+    assert_eq!(accepted, 1);
+    spool.ack(&[rows[0].0]).unwrap();
+    assert!(result.is_err());
+    assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+    // The server accepted prefix event 1 before rejecting event 2. The whole
+    // gRPC batch retries. HTTP skips its own confirmed prefix on retry.
+    let mut state = state.lock().unwrap();
+    assert_eq!(
+        state.reject_prefixes.as_ref().unwrap(),
+        &[r#"{"n":1}"#, r#"{"n":1}"#]
+    );
+    let batches = std::mem::take(&mut state.batches);
+    drop(state);
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0], batches[1]);
+    assert_eq!(posted.await.unwrap(), [1, 2, 2]);
+    assert_eq!(spool.pending_count(), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn delivery_http_retry_resumes_after_accepted_prefix() {
+    let (address, posted) = delivery_http_fixture(&[
+        "202 Accepted",
+        "503 Service Unavailable",
+        "202 Accepted",
+        "202 Accepted",
+    ])
+    .await;
+    let mut client = Client::new(address.to_string());
+    client.retry.max_attempts = 2;
+    client.retry.min_backoff = std::time::Duration::from_millis(10);
+    client.retry.jitter_percent = 0;
+    client
+        .send_events(&[delivery_event(1), delivery_event(2), delivery_event(3)])
+        .await
+        .unwrap();
+    assert_eq!(posted.await.unwrap(), [1, 2, 2, 3]);
 }

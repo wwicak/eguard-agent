@@ -604,3 +604,43 @@ fn detp1_positive_decision_with_info_envelope_is_protected() {
         assert_eq!(buffer.peek_batch(1).unwrap()[0].1.created_at_unix, 0);
     }
 }
+
+#[test]
+fn delivery_counts_every_spool_overflow_but_not_ack() {
+    let fixture = TestDir::new();
+    let path = fixture.0.join("delivery-spool.db");
+    let event = sample_event(1);
+    let cap = estimate_event_size(&event);
+    for mut buffer in [
+        EventBuffer::memory(cap),
+        EventBuffer::sqlite(path.to_str().unwrap(), cap).unwrap(),
+    ] {
+        buffer.enqueue(event.clone()).unwrap();
+        buffer.enqueue(event.clone()).unwrap();
+        let mut oversize = event.clone();
+        oversize.payload_json.push_str(&"x".repeat(cap));
+        buffer.enqueue(oversize).unwrap();
+        let ids: Vec<_> = buffer
+            .peek_batch(2)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids.len(), 1);
+        buffer.ack(&ids).unwrap();
+        assert_eq!(buffer.spool_losses(), 2);
+    }
+}
+
+#[test]
+fn delivery_sqlite_counts_an_enqueue_error_as_loss() {
+    let fixture = TestDir::new();
+    let path = fixture.0.join("delivery-spool-error.db");
+    let mut buffer = SqliteBuffer::new(path.to_str().unwrap(), 4096).unwrap();
+    buffer
+        .conn
+        .execute("DROP TABLE offline_events", [])
+        .unwrap();
+    assert!(buffer.enqueue(sample_event(1)).is_err());
+    assert_eq!(buffer.spool_losses(), 1);
+}

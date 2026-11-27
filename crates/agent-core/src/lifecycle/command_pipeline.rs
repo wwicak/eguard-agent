@@ -26,7 +26,7 @@ mod host_isolation_allowlist;
 mod host_isolation_linux;
 pub(super) mod isolation_state;
 mod on_demand_scan;
-mod paths;
+pub(super) mod paths;
 mod payloads;
 mod profile_apply;
 mod sanitize;

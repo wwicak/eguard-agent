@@ -4005,6 +4005,32 @@ fn layer1_exact_store_only_matches_without_prefilter() {
 
 #[test]
 #[cfg_attr(miri, ignore = "sqlite FFI is unsupported under miri")]
+fn exact_store_reopen_preserves_indicators() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("ioc-exact-store.sqlite");
+    let path = path.to_str().expect("utf-8 path");
+    {
+        let mut store = IocExactStore::open(path).expect("open sqlite store");
+        store
+            .load_hashes(["DEADBEEF".to_string()])
+            .expect("load hash");
+        store
+            .load_domains(["Bad.Example.".to_string()])
+            .expect("load domain");
+        store
+            .load_ips(["2001:db8::1".to_string()])
+            .expect("load IP");
+    }
+
+    let store = IocExactStore::open(path).expect("reopen sqlite store");
+    assert!(store.contains_hash("deadbeef").expect("read hash"));
+    assert!(store.contains_domain("bad.example").expect("read domain"));
+    assert!(store.contains_ip("2001:db8::1").expect("read IP"));
+    assert!(!store.contains_hash("missing").expect("read missing hash"));
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "sqlite FFI is unsupported under miri")]
 fn ephemeral_exact_store_file_is_removed_on_drop() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("ioc-exact-store.sqlite");

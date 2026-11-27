@@ -1,7 +1,9 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::Result;
+use grpc_client::TransportMode;
 use serde_json::json;
 use tokio::time::timeout;
 use tracing::{info, warn};
@@ -15,6 +17,8 @@ use super::{
 const INTERNAL_PROCESS_TTL_NS: u64 = 15 * 60 * 1_000_000_000;
 const INTERNAL_PROCESS_PID_LIMIT: usize = 4_096;
 const TELEMETRY_SEND_TIMEOUT_MS: u64 = 5_000;
+// Leave refill headroom below the default server burst of 200.
+const GRPC_TELEMETRY_BATCH_SIZE: usize = 128;
 
 #[derive(Clone, Copy)]
 pub(super) enum ProcessGeneration {
@@ -141,6 +145,27 @@ impl ProcessGeneration {
 }
 
 impl AgentRuntime {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_telemetry_shutdown(&mut self, shutdown: tokio::sync::watch::Receiver<bool>) {
+        self.telemetry_shutdown = Some(shutdown);
+    }
+
+    pub(super) async fn send_telemetry(
+        &self,
+        batch: &[EventEnvelope],
+        accepted: &AtomicUsize,
+    ) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(mut shutdown) = self.telemetry_shutdown.clone() {
+            tokio::select! {
+                biased;
+                Ok(_) = shutdown.wait_for(|stopping| *stopping) => anyhow::bail!("telemetry send cancelled for shutdown"),
+                result = self.client.send_events_with_progress(batch, accepted) => return result,
+            }
+        }
+        self.client.send_events_with_progress(batch, accepted).await
+    }
+
     pub(super) async fn run_connected_telemetry_stage(
         &mut self,
         evaluation: Option<&TickEvaluation>,
@@ -236,6 +261,7 @@ impl AgentRuntime {
         if let Some(remaining) = self.buffer_enqueue_failure_at.as_mut() {
             if *remaining == 0 {
                 self.buffer_enqueue_failure_at = None;
+                self.buffer.note_spool_losses(1);
                 anyhow::bail!("injected buffer enqueue failure");
             }
             *remaining -= 1;
@@ -250,11 +276,22 @@ impl AgentRuntime {
     async fn flush_telemetry_batch(
         &mut self,
         events: Vec<EventEnvelope>,
-        include_all_current: bool,
+        reserve_for_current: bool,
     ) -> Result<()> {
         let send_started = Instant::now();
         let pending_before = self.buffer.pending_count();
-        let rows = match self.buffer.peek_batch(EVENT_BATCH_SIZE) {
+        let batch_limit = match self.client.transport_mode() {
+            TransportMode::Grpc => GRPC_TELEMETRY_BATCH_SIZE,
+            TransportMode::Http => EVENT_BATCH_SIZE,
+        };
+        // The first evaluation still travels before control-plane work,
+        // without inserting it into a full spool or sending more than the cap.
+        let reserved = if reserve_for_current {
+            events.len().min(batch_limit)
+        } else {
+            0
+        };
+        let rows = match self.buffer.peek_batch(batch_limit - reserved) {
             Ok(batch) => batch,
             Err(err) => {
                 // Preserve current events without hiding the peek error.
@@ -267,7 +304,7 @@ impl AgentRuntime {
         let mut batch: Vec<_> = rows.into_iter().map(|(_, event)| event).collect();
         let mut overflow = Vec::new();
         for event in events {
-            if include_all_current || batch.len() < EVENT_BATCH_SIZE {
+            if batch.len() < batch_limit {
                 batch.push(event);
             } else {
                 overflow.push(event);
@@ -277,26 +314,29 @@ impl AgentRuntime {
             return self.buffer_events(overflow);
         }
 
+        let accepted = AtomicUsize::new(0);
         #[cfg(test)]
         self.telemetry_send_batches.push(batch.len());
         #[cfg(test)]
-        let send_result = if self.telemetry_send_success {
+        let mock_success = self.telemetry_send_success;
+        #[cfg(not(test))]
+        let mock_success = false;
+        let send_result = if mock_success {
+            accepted.store(batch.len(), Ordering::Relaxed);
             Ok(Ok(()))
         } else {
             timeout(
                 std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
-                self.client.send_events(&batch),
+                self.send_telemetry(&batch, &accepted),
             )
             .await
         };
-        #[cfg(not(test))]
-        let send_result = timeout(
-            std::time::Duration::from_millis(TELEMETRY_SEND_TIMEOUT_MS),
-            self.client.send_events(&batch),
-        )
-        .await;
+        let accepted = accepted.load(Ordering::Relaxed);
+        // HTTP can accept a prefix before a later attempt fails or times out.
+        // The cursor is owned by this caller, not the cancelled send future.
+        let ack_result = self.buffer.ack(&ids[..accepted.min(buffered_count)]);
+        self.pipeline_events_sent = self.pipeline_events_sent.saturating_add(accepted as u64);
 
-        let ack_result;
         if let Err(err) = match send_result {
             Ok(result) => result,
             Err(_) => Err(anyhow::anyhow!(
@@ -309,9 +349,13 @@ impl AgentRuntime {
                 self.transition_to_degraded(DegradedCause::SendFailures);
             }
 
-            // Old rows never left the buffer; append only unsent current events.
-            let current_result =
-                self.buffer_events(batch.into_iter().skip(buffered_count).collect());
+            // Unacknowledged old rows are still buffered; append only unsent fresh events.
+            let current_result = self.buffer_events(
+                batch
+                    .into_iter()
+                    .skip(buffered_count.max(accepted))
+                    .collect(),
+            );
             let overflow_result = self.buffer_events(overflow);
             warn!(
                 error = %err,
@@ -320,14 +364,10 @@ impl AgentRuntime {
                 "send failed, event re-buffering attempted"
             );
             self.metrics.last_send_event_batch_micros = elapsed_micros(send_started);
-            return current_result.and(overflow_result);
+            return current_result.and(overflow_result).and(ack_result);
         } else {
             self.consecutive_send_failures = 0;
-            self.pipeline_events_sent =
-                self.pipeline_events_sent.saturating_add(batch.len() as u64);
-            // An ack failure retains rows for at-least-once delivery; still append
-            // current overflow below rather than discarding it on this error.
-            ack_result = self.buffer.ack(&ids);
+
             if std::env::var("EGUARD_DEBUG_OFFLINE_LOG")
                 .ok()
                 .filter(|v| !v.trim().is_empty())

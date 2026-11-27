@@ -123,7 +123,13 @@ impl AgentRuntime {
         };
 
         if self.client.is_online() {
-            if let Err(err) = self.client.send_events(std::slice::from_ref(&alert)).await {
+            if let Err(err) = self
+                .send_telemetry(
+                    std::slice::from_ref(&alert),
+                    &std::sync::atomic::AtomicUsize::new(0),
+                )
+                .await
+            {
                 warn!(
                     error = %err,
                     pending = self.buffer.pending_count(),
@@ -160,7 +166,8 @@ impl AgentRuntime {
         })
         .to_string();
 
-        let alert = EventEnvelope {
+        #[allow(unused_mut)]
+        let mut alert = EventEnvelope {
             agent_id: self.config.agent_id.clone(),
             event_type: "alert".to_string(),
             severity: "critical".to_string(),
@@ -168,6 +175,8 @@ impl AgentRuntime {
             payload_json: payload,
             created_at_unix: now_unix,
         };
+        #[cfg(target_os = "linux")]
+        super::update_window::classify(&mut alert, super::update_window::current(now_unix));
 
         if self.client.is_online() {
             match timeout(

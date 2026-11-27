@@ -33,6 +33,15 @@ impl AgentRuntime {
 
         let config_version = self.heartbeat_config_version();
         let runtime = self.build_heartbeat_runtime_payload(baseline_status);
+        #[cfg(target_os = "linux")]
+        let runtime = HeartbeatRuntimeEnvelope {
+            sensor_health: super::super::sensor_health::sensor_health_report(
+                &self.ebpf_engine,
+                now_unix,
+                self.buffer.spool_losses(),
+            ),
+            ..runtime
+        };
 
         self.enqueue_control_plane_send(PendingControlPlaneSend::Heartbeat {
             agent_id: self.config.agent_id.clone(),
@@ -141,6 +150,7 @@ impl AgentRuntime {
                 events_per_second: 0.0,
             },
             buffered_events: snapshot.pending_event_count as i64,
+            sensor_health: None,
         }
     }
 

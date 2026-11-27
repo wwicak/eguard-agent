@@ -20,6 +20,7 @@ pub(super) fn detect_kernel_capabilities(stats: &mut EbpfStats) {
     // Check LSM BPF availability
     if let Ok(lsm) = std::fs::read_to_string("/sys/kernel/security/lsm") {
         stats.lsm_available = lsm.contains("bpf");
+        stats.lsm_list_known = true;
     }
 }
 

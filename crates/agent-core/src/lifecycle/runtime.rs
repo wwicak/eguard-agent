@@ -66,6 +66,8 @@ pub struct AgentRuntime {
     #[cfg(test)]
     pub(super) telemetry_eval_budget_override: Option<std::time::Duration>,
     pub(super) tick_telemetry: Option<Vec<super::EventEnvelope>>,
+    #[cfg(target_os = "linux")]
+    pub(super) telemetry_shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     pub(super) response_execution_remaining: usize,
     #[cfg(test)]
     pub(super) buffer_enqueue_failure_at: Option<usize>,
@@ -183,6 +185,12 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(config: AgentConfig) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        super::update_window::cleanup(
+            &super::command_pipeline::paths::resolve_agent_data_dir(),
+            super::now_unix(),
+            0,
+        );
         if let Some(bundle_public_key) = config
             .detection_bundle_public_key
             .as_deref()
@@ -510,6 +518,8 @@ impl AgentRuntime {
             #[cfg(test)]
             telemetry_eval_budget_override: None,
             tick_telemetry: None,
+            #[cfg(target_os = "linux")]
+            telemetry_shutdown: None,
             response_execution_remaining: super::RESPONSE_EXECUTION_BUDGET_PER_TICK,
             #[cfg(test)]
             buffer_enqueue_failure_at: None,

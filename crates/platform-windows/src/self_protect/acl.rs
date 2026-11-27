@@ -4,7 +4,7 @@
 //! Windows DACLs.
 
 #[cfg(target_os = "windows")]
-use crate::windows_cmd::{ICACLS_EXE, SC_EXE};
+use crate::windows_cmd::SC_EXE;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
@@ -39,18 +39,71 @@ fn harden_process_acl() -> Result<(), super::SelfProtectError> {
     Ok(())
 }
 
+#[cfg(any(target_os = "windows", test))]
+const DATA_DIRECTORY_SDDL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+/// Protect the agent-owned data root; children inherit SYSTEM/Administrators access.
+/// Unlike icacls /grant:r, replacing the DACL also removes other explicit grants.
+pub fn harden_data_directory() -> Result<(), super::SelfProtectError> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{LocalFree, BOOL, HLOCAL};
+        use windows::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+            SE_FILE_OBJECT,
+        };
+        use windows::Win32::Security::{
+            GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        };
+
+        let root = r"C:\ProgramData\eGuard";
+        std::fs::create_dir_all(root).map_err(|err| {
+            super::SelfProtectError::AclFailed(format!("create data directory: {err}"))
+        })?;
+        let path: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+        let sddl: Vec<u16> = DATA_DIRECTORY_SDDL.encode_utf16().chain(Some(0)).collect();
+        let result = unsafe {
+            let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(sddl.as_ptr()),
+                1,
+                &mut descriptor,
+                None,
+            )
+            .and_then(|()| {
+                let result = (|| {
+                    let mut present = BOOL::default();
+                    let mut defaulted = BOOL::default();
+                    let mut dacl = std::ptr::null_mut();
+                    GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)?;
+                    SetNamedSecurityInfoW(
+                        PCWSTR(path.as_ptr()),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        PSID::default(),
+                        PSID::default(),
+                        Some(dacl),
+                        None,
+                    )
+                    .ok()
+                })();
+                let _ = LocalFree(HLOCAL(descriptor.0));
+                result
+            })
+        };
+        result.map_err(|err| {
+            super::SelfProtectError::AclFailed(format!("protect data directory: {err}"))
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn harden_file_acls() -> Result<(), super::SelfProtectError> {
-    run_command(
-        ICACLS_EXE,
-        &[
-            r"C:\ProgramData\eGuard",
-            "/inheritance:r",
-            "/grant:r",
-            r"SYSTEM:(OI)(CI)F",
-            r"Administrators:(OI)(CI)F",
-        ],
-    )
+    harden_data_directory()
 }
 
 #[cfg(target_os = "windows")]
@@ -76,4 +129,30 @@ fn run_command(binary: &str, args: &[&str]) -> Result<(), super::SelfProtectErro
         args,
         detail.trim()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn data_directory_dacl_is_protected_and_inheritable_for_system_and_admins_only() {
+        assert_eq!(
+            super::DATA_DIRECTORY_SDDL,
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+        );
+    }
+
+    #[test]
+    fn data_directory_acl_is_applied_before_config_load() {
+        let main = include_str!("../../../agent-core/src/main.rs");
+        let startup = main
+            .split("async fn run_console_with_shutdown")
+            .nth(1)
+            .expect("startup");
+        let harden = startup
+            .find("harden_data_directory()")
+            .expect("startup directory hardening");
+        let config = startup.find("AgentConfig::load()").expect("config load");
+        assert!(harden < config);
+        assert!(startup[..config].contains("warn!"));
+    }
 }

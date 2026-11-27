@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -62,7 +63,11 @@ struct BaselineBatchRequest<'a> {
 }
 
 impl Client {
-    pub(super) async fn send_events_http(&self, batch: &[EventEnvelope]) -> Result<()> {
+    pub(super) async fn send_events_http(
+        &self,
+        batch: &[EventEnvelope],
+        accepted: &AtomicUsize,
+    ) -> Result<()> {
         let url = self.url_for(PATH_TELEMETRY);
         let payloads = batch
             .iter()
@@ -86,8 +91,18 @@ impl Client {
             let url = url.clone();
             let payloads = payloads.clone();
             async move {
-                for payload in &payloads {
-                    self.post_json_request(&url, payload, "telemetry").await?;
+                for (index, payload) in payloads
+                    .iter()
+                    .enumerate()
+                    .skip(accepted.load(Ordering::Relaxed))
+                {
+                    let response = self.post_json_request(&url, payload, "telemetry").await?;
+                    anyhow::ensure!(
+                        response.status() == reqwest::StatusCode::ACCEPTED,
+                        "telemetry rejected with HTTP {}",
+                        response.status()
+                    );
+                    accepted.store(index + 1, Ordering::Relaxed);
                 }
                 Ok(())
             }
@@ -133,6 +148,9 @@ impl Client {
                 "events_per_second": runtime.resource_usage.events_per_second,
             });
             body["buffered_events"] = runtime.buffered_events.into();
+            if let Some(health) = &runtime.sensor_health {
+                body["sensor_health"] = serde_json::to_value(health)?;
+            }
         }
 
         self.post_json_with_retry("heartbeat_http", PATH_HEARTBEAT, &body, "heartbeat")
@@ -405,7 +423,11 @@ impl Client {
         self.with_retry(operation_name, || {
             let url = url.clone();
             let body = body.clone();
-            async move { self.post_json_request(&url, &body, request_name).await }
+            async move {
+                self.post_json_request(&url, &body, request_name)
+                    .await
+                    .map(|_| ())
+            }
         })
         .await
     }
@@ -415,7 +437,7 @@ impl Client {
         url: &str,
         payload: &T,
         request_name: &str,
-    ) -> Result<()> {
+    ) -> Result<reqwest::Response> {
         self.http
             .post(url)
             .json(payload)
@@ -423,8 +445,7 @@ impl Client {
             .await
             .with_context(|| format!("failed sending {} to {}", request_name, url))?
             .error_for_status()
-            .with_context(|| format!("{} rejected by {}", request_name, url))?;
-        Ok(())
+            .with_context(|| format!("{} rejected by {}", request_name, url))
     }
 
     async fn get_json_with_retry<T: DeserializeOwned>(

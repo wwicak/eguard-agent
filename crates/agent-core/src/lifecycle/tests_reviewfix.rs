@@ -196,7 +196,7 @@ async fn first_send_outcome_controls_same_tick_maintenance() {
     runtime.tick(now).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 1);
     assert_eq!(runtime.buffer.pending_count(), EVENT_BATCH_SIZE + 1);
-    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE]);
     assert_eq!(runtime.last_policy_fetch_unix, None);
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
     let retained = runtime.buffer.drain_batch(EVENT_BATCH_SIZE + 1).unwrap();
@@ -217,7 +217,7 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
     let now = 1_700_000_000;
     prepare_tick(&mut runtime, now);
     runtime.consecutive_send_failures = 1;
-    for i in 0..EVENT_BATCH_SIZE {
+    for i in 0..EVENT_BATCH_SIZE - 1 {
         runtime.buffer.enqueue(event(i as i64)).unwrap();
     }
     runtime.telemetry_send_success = true;
@@ -225,7 +225,7 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
     runtime.tick(now + 1).await.unwrap();
     assert_eq!(runtime.consecutive_send_failures, 0);
     assert_eq!(runtime.buffer.pending_count(), 0);
-    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE + 1]);
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE]);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now + 1));
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
     assert!(runtime
@@ -234,6 +234,27 @@ async fn successful_first_send_recovers_same_tick_maintenance() {
         .any(|task| { matches!(task.kind, ControlPlaneTaskKind::ThreatIntelRefresh) }));
     // MAINTENANCE_TRANSPORT_COOLDOWN_SECS: 127.0.0.1:1 refuses policy_sync.
     assert_eq!(runtime.maintenance_retry_after_unix, Some(now + 1 + 30));
+}
+
+#[tokio::test]
+async fn successful_first_send_defers_maintenance_when_the_cap_leaves_backlog() {
+    let mut runtime = runtime();
+    let now = 1_700_000_000;
+    prepare_tick(&mut runtime, now);
+    for i in 0..EVENT_BATCH_SIZE {
+        runtime.buffer.enqueue(event(i as i64)).unwrap();
+    }
+    runtime.telemetry_send_success = true;
+    queue_event(&mut runtime);
+    runtime.tick(now + 1).await.unwrap();
+    assert_eq!(runtime.telemetry_send_batches, [EVENT_BATCH_SIZE]);
+    assert_eq!(runtime.buffer.pending_count(), 1);
+    let remaining = runtime.buffer.peek_batch(1).unwrap();
+    assert_eq!(
+        remaining[0].1.created_at_unix,
+        (EVENT_BATCH_SIZE - 1) as i64
+    );
+    assert_eq!(runtime.last_policy_fetch_unix, None);
 }
 
 #[tokio::test]
@@ -563,10 +584,7 @@ async fn fresh_compliance_alert_drains_remaining_old_rows_before_scheduling() {
     }
     queue_event(&mut runtime);
     runtime.tick(now).await.unwrap();
-    assert_eq!(
-        runtime.telemetry_send_batches,
-        vec![EVENT_BATCH_SIZE + 1, 2]
-    );
+    assert_eq!(runtime.telemetry_send_batches, vec![EVENT_BATCH_SIZE, 3]);
     assert_eq!(runtime.buffer.pending_count(), 0);
     assert_eq!(runtime.last_policy_fetch_unix, Some(now));
     assert_eq!(runtime.last_threat_intel_refresh_unix, None);
@@ -830,4 +848,191 @@ fn compliance_policy_transition_prunes_full_old_context() {
         "obsolete policy dedupe entries must be pruned"
     );
     assert!(runtime.collect_compliance_alerts(&result, 123).is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn delivery_signal_finishes_hung_tick_under_stop_deadline_and_spools() {
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
+    let path = path.to_str().unwrap();
+    runtime.buffer = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.client = grpc_client::Client::new(listener.local_addr().unwrap().to_string());
+    let (started, in_flight) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let (first, _) = listener.accept().await.unwrap();
+        let _ = started.send(());
+        let mut held = vec![first];
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    runtime.tick_telemetry = Some((1..=4).map(event).collect());
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    runtime.set_telemetry_shutdown(receiver);
+    let mut signal: crate::ShutdownFuture = Box::pin(async move {
+        in_flight.await.unwrap();
+        crate::ShutdownReason::SigTerm
+    });
+    let completion = tokio::time::timeout(
+        std::time::Duration::from_secs(14),
+        crate::finish_tick_on_telemetry_shutdown(
+            runtime.run_connected_telemetry_stage(None),
+            &mut signal,
+            &stop,
+        ),
+    )
+    .await;
+    peer.abort();
+    completion
+        .expect("SIGTERM exceeded its 15s stop limit")
+        .0
+        .unwrap();
+    let reopened = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    let timestamps: Vec<_> = reopened
+        .peek_batch(4)
+        .unwrap()
+        .into_iter()
+        .map(|(_, e)| e.created_at_unix)
+        .collect();
+    assert_eq!(timestamps, [1, 2, 3, 4]);
+    drop(reopened);
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[tokio::test]
+async fn delivery_http_timeout_acks_old_rows_and_does_not_rebuffer_confirmed_fresh_prefix() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
+    let path = path.to_str().unwrap();
+    runtime.buffer = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    runtime.buffer.enqueue(event(1)).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.client = grpc_client::Client::new(listener.local_addr().unwrap().to_string());
+    let peer = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+        let (_hung, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    runtime
+        .flush_event_batch(vec![event(2), event(3)])
+        .await
+        .unwrap();
+    peer.abort();
+    assert_eq!(runtime.consecutive_send_failures, 1);
+    assert_eq!(runtime.pipeline_events_sent, 2);
+    let reopened = grpc_client::EventBuffer::sqlite(path, 4096).unwrap();
+    let timestamps: Vec<_> = reopened
+        .peek_batch(4)
+        .unwrap()
+        .into_iter()
+        .map(|(_, e)| e.created_at_unix)
+        .collect();
+    assert_eq!(timestamps, [3]);
+    drop(reopened);
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn sigterm_stop_flag_does_not_block_final_tamper_alert() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut runtime = runtime();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.client = grpc_client::Client::new(listener.local_addr().unwrap().to_string());
+    let (_stop, receiver) = tokio::sync::watch::channel(true);
+    runtime.set_telemetry_shutdown(receiver);
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).await.unwrap();
+            assert!(n > 0);
+            request.extend_from_slice(&buf[..n]);
+            if let Some((_, body)) = std::str::from_utf8(&request)
+                .unwrap()
+                .split_once("\r\n\r\n")
+            {
+                if let Ok(body) = serde_json::from_str::<serde_json::Value>(body) {
+                    assert_eq!(body["rule_name"], "agent_stop_tamper");
+                    assert_eq!(body["event_data"]["signal"], "sigterm");
+                    break;
+                }
+            }
+        }
+        socket
+            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    runtime.report_shutdown_tamper(1, "sigterm").await.unwrap();
+    assert_eq!(runtime.buffer.pending_count(), 0, "not delivered directly");
+    tokio::time::timeout(std::time::Duration::from_secs(2), peer)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn grpc_spool_send_cap_respects_default_server_burst() {
+    let mut runtime = runtime();
+    runtime.client =
+        grpc_client::Client::with_mode("127.0.0.1:1".into(), grpc_client::TransportMode::Grpc);
+    runtime.telemetry_send_success = true;
+    for i in 0..256 {
+        runtime.buffer.enqueue(event(i)).unwrap();
+    }
+    runtime.flush_event_batch(Vec::new()).await.unwrap();
+    assert_eq!(runtime.telemetry_send_batches, [128]);
+    assert_eq!(runtime.buffer.pending_count(), 128);
+}
+
+#[tokio::test]
+#[ignore = "run with the Go delivery-default-burst loopback fixture"]
+async fn delivery_default_burst_grpc_spool_fixture() {
+    let address = std::env::var("EGUARD_TEST_DELIVERY_GRPC_ADDR").unwrap();
+    let first_only = std::env::var_os("EGUARD_TEST_DELIVERY_BASE_SERVER").is_some();
+    let mut runtime = runtime();
+    let fixture = reviewfix_sqlite_dir();
+    let path = fixture.join("offline.db");
+    runtime.buffer = grpc_client::EventBuffer::sqlite(path.to_str().unwrap(), 64 * 1024).unwrap();
+    runtime.client = grpc_client::Client::with_mode(address, grpc_client::TransportMode::Grpc);
+    for i in 1..=256 {
+        let mut envelope = event(i);
+        envelope.payload_json = format!(r#"{{"sequence":{i}}}"#);
+        runtime.buffer.enqueue(envelope).unwrap();
+    }
+    runtime.flush_event_batch(Vec::new()).await.unwrap();
+    assert_eq!(
+        runtime.buffer.pending_count(),
+        128,
+        "first 128 must be admitted"
+    );
+    if !first_only {
+        runtime.flush_event_batch(Vec::new()).await.unwrap();
+        assert_eq!(
+            runtime.buffer.pending_count(),
+            0,
+            "remaining 128 must drain"
+        );
+    }
+    drop(runtime);
+    std::fs::remove_dir_all(fixture).unwrap();
 }

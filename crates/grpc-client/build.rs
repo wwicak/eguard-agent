@@ -3,6 +3,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("PROTOC", protoc);
 
     tonic_prost_build::configure()
+        .type_attribute(
+            ".eguard.v1.SensorProbe",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            ".eguard.v1.SensorHealthReport",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
         .build_client(true)
         .build_server(true)
         .compile_protos(

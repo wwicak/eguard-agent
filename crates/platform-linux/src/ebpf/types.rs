@@ -44,6 +44,23 @@ pub struct EbpfStats {
     pub btf_available: bool,
     /// Whether LSM BPF is available.
     pub lsm_available: bool,
+    /// Whether the kernel's enabled LSM list was readable.
+    pub lsm_list_known: bool,
+    pub skipped_lsm: Option<ProbeHealth>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProbeHealth {
+    pub name: String,
+    pub status: &'static str,
+    pub reason: &'static str,
+}
+
+#[derive(Default)]
+pub struct SensorLoss {
+    pub kernel_drops: u64,
+    pub perf_lost_samples: u64,
+    pub pending_queue_evictions: u64,
 }
 
 #[derive(Debug)]

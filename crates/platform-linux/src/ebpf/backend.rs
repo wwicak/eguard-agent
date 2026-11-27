@@ -1,11 +1,23 @@
 use std::time::Duration;
 
-use super::types::{PollBatch, Result};
+use super::types::{PollBatch, ProbeHealth, Result, SensorLoss};
 
 pub(super) trait RingBufferBackend {
     fn poll_raw_events(&mut self, timeout: Duration) -> Result<PollBatch>;
 
     fn reclaim_raw_records(&mut self, _records: Vec<Vec<u8>>) {}
+
+    fn sensor_transport(&self) -> &'static str {
+        "none"
+    }
+
+    fn sensor_loss(&self) -> SensorLoss {
+        SensorLoss::default()
+    }
+
+    fn unattached_probes(&self) -> Vec<ProbeHealth> {
+        Vec::new()
+    }
 
     #[allow(dead_code)]
     fn failed_probes(&self) -> Vec<String> {

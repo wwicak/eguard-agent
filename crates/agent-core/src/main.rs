@@ -82,6 +82,11 @@ async fn run_console() -> Result<()> {
 async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
     init_tracing();
 
+    #[cfg(target_os = "windows")]
+    if let Err(err) = platform_windows::self_protect::acl::harden_data_directory() {
+        warn!(error = %err, "failed hardening agent data directory; continuing");
+    }
+
     let config = AgentConfig::load()?;
     let mut runtime = AgentRuntime::new(config.clone())?;
 
@@ -135,6 +140,24 @@ async fn run_console_with_shutdown(shutdown: ShutdownFuture) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+async fn finish_tick_on_telemetry_shutdown(
+    tick: impl Future<Output = Result<()>>,
+    shutdown: &mut ShutdownFuture,
+    stop: &tokio::sync::watch::Sender<bool>,
+) -> (Result<()>, Option<ShutdownReason>) {
+    tokio::pin!(tick);
+    tokio::select! {
+        biased;
+        reason = shutdown => {
+            if reason == ShutdownReason::SigTerm { stop.send_replace(true); }
+            // Cancel only the network send, never the tick/rebuffering work.
+            (tick.await, Some(reason))
+        }
+        result = &mut tick => (result, None),
+    }
+}
+
+#[cfg(target_os = "linux")]
 async fn run_tick_loop(
     runtime: &mut AgentRuntime,
     shutdown: ShutdownFuture,
@@ -144,10 +167,13 @@ async fn run_tick_loop(
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut shutdown = shutdown;
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    runtime.set_telemetry_shutdown(receiver);
 
     loop {
         tokio::select! {
             reason = &mut shutdown => {
+                if reason == ShutdownReason::SigTerm { stop.send_replace(true); }
                 return reason;
             }
             _ = tick.tick() => {
@@ -156,9 +182,11 @@ async fn run_tick_loop(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or_default();
-                if let Err(err) = runtime.tick(now).await {
+                let (result, reason) = finish_tick_on_telemetry_shutdown(runtime.tick(now), &mut shutdown, &stop).await;
+                if let Err(err) = result {
                     warn!(error = %err, "runtime tick failed; continuing");
                 }
+                if let Some(reason) = reason { return reason; }
             }
         }
     }
